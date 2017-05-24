@@ -7,3 +7,5 @@ python -m benchmark_django_rest_framework.create_benchmark_settings
 Then add the codes like below in the django settings.py file.
 
 BENCHMARK_SETTINGS = 'your_app_name.benchmark_settings'
+
+There is a demo for this framework: https://github.com/hqsh/benchmark_django_rest_framework_demo.
