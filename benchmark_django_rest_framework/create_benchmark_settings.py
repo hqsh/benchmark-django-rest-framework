@@ -178,7 +178,7 @@ if __name__ == '__main__':
     color_end = '\033[0m'
     has_settings_file = os.path.isfile('./settings.py')
     if not has_settings_file:
-        print(red + 'ERROR: You should run this script in the directory which has django settings.py file.' + color_end)
+        print(red + 'ERROR: You should run this script in the directory which include the django settings.py file.' + color_end)
         exit(1)
     has_benchmark_settings_file = os.path.isfile('./benchmark_settings.py')
     if has_benchmark_settings_file:
