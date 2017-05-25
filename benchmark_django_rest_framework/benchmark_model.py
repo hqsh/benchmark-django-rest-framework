@@ -20,11 +20,11 @@ except KeyError:
 
 class BenchmarkModel(object):
     @staticmethod
-    def get_response_by_code(code=0, msg=None, data=None, msg_append=None):
+    def get_response_by_code(code=SETTINGS.SUCCESS_CODE, msg=None, data=None, msg_append=None):
         return SETTINGS.GET_RESPONSE_BY_CODE(code, msg, data, msg_append)
 
     @staticmethod
-    def get_http_response_by_code(code=0, msg=None, data=None):
+    def get_http_response_by_code(code=SETTINGS.SUCCESS_CODE, msg=None, data=None):
         return SETTINGS.GET_HTTP_RESPONSE_BY_CODE(code, msg, data)
 
     @classmethod
@@ -86,8 +86,6 @@ class BenchmarkModel(object):
         if params is not None:
             for key, value in params.items():
                 if key not in [SETTINGS.ORDER_BY, SETTINGS.OFFSET, SETTINGS.LIMIT]:
-                    if value is not None and len(key) > 4 and key[-4:] == '__in':
-                        value = eval(value)
                     model_filter[key] = value
         if query_set is not None and len(model_filter) == 0:
             pass
@@ -162,7 +160,9 @@ class BenchmarkModel(object):
                     if related_field is not None and hasattr(related_field, name):
                         value = getattr(related_field, name)
                         if name in dict_m.keys():
-                            name = relate_name
+                            name = relate_name + '__' + name
+                        while name in dict_m.keys():
+                            name = name + '__'
                         dict_m[name] = value
             cls.get_json_in_dict(dict_m)
             list_data.append(dict_m)
@@ -483,7 +483,7 @@ class BenchmarkModel(object):
             post_data[key] = value
         if SETTINGS.MODEL_DELETE_FLAG is not None and exist_item is None:
             res = cls.check_unique_together(post_data_before_foreign_key_process)
-            if res[SETTINGS.CODE] != 0:
+            if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                 return res
         pks = []
         if exist_item is None:
@@ -611,7 +611,7 @@ class BenchmarkModel(object):
             update_data = model_to_dict(m)
             update_data.update(post_data)
             res = cls.check_unique_together(post_data_before_foreign_key_process, pk=m.pk)
-            if res[SETTINGS.CODE] != 0:
+            if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                 return res
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             if getattr(m, SETTINGS.MODEL_DELETE_FLAG):
@@ -669,7 +669,7 @@ class BenchmarkModel(object):
                     query_set = related_model.objects.filter(**{remote_field_name_in_db: m.pk})
                     for item in query_set:
                         res = cls.delete_related_models(m=item, delete_flag=delete_flag, user=user, modifier=m_modifier, delete_time=delete_time)
-                        if res[SETTINGS.CODE] != 0:    # code = 7
+                        if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:    # code = 7
                             res_data.append(res[SETTINGS.DATA])
             if len(res_data) > 0:
                 return cls.get_response_by_code(11, data=res_data)
@@ -717,7 +717,7 @@ class BenchmarkModel(object):
             # delete
             for pk in pks:
                 res = cls.delete_related_models(pk=pk, delete_flag=delete_flag, user=user)
-                if res[SETTINGS.CODE] != 0:
+                if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                     return res
             return cls.get_response_by_code(0)
         else:

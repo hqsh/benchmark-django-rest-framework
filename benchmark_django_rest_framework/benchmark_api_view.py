@@ -74,11 +74,11 @@ class BenchmarkAPIView(APIView):
         self.values_white_list = True
 
     @staticmethod
-    def get_response_by_code(code=0, msg=None, data=None, msg_append=None):
+    def get_response_by_code(code=SETTINGS.SUCCESS_CODE, msg=None, data=None, msg_append=None):
         return SETTINGS.GET_RESPONSE_BY_CODE(code, msg, data, msg_append)
 
     @staticmethod
-    def get_http_response_by_code(code=0, msg=None, data=None):
+    def get_http_response_by_code(code=SETTINGS.SUCCESS_CODE, msg=None, data=None):
         return SETTINGS.GET_HTTP_RESPONSE_BY_CODE(code, msg, data)
 
     # 检查请求字段是否存在
@@ -180,9 +180,9 @@ class BenchmarkAPIView(APIView):
                                             values=self.values, values_white_list=self.values_white_list
                                             )
         if type(data) == dict and SETTINGS.CODE in data.keys() and SETTINGS.MSG in data.keys() and \
-                len(data) == 2 and data[SETTINGS.CODE] != 0:
+                len(data) == 2 and data[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
             return data
-        res = self.get_response_by_code(0)
+        res = self.get_response_by_code(SETTINGS.SUCCESS_CODE)
         res[SETTINGS.DATA] = data
         return res
 
@@ -265,9 +265,9 @@ class BenchmarkAPIView(APIView):
                 for key, value in request_data.items():
                     self.data[key] = value
         res = self.check_request_param_data()
-        if res[SETTINGS.CODE] != 0:
+        if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
             return res
-        return self.get_response_by_code(0)
+        return self.get_response_by_code(SETTINGS.SUCCESS_CODE)
 
     # 处理各种类型的返回
     @staticmethod
@@ -281,27 +281,27 @@ class BenchmarkAPIView(APIView):
     # 处理 get 请求
     def get(self, request, **uri_params):
         res = self.begin(request, uri_params)
-        if res[SETTINGS.CODE] == 0:
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             res = self.get_model()
         return self.process_response(res)
 
     # 处理 post 请求
     def post(self, request):
         res = self.begin(request)
-        if res[SETTINGS.CODE] == 0:
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             res = self.post_model()
         return self.process_response(res)
 
     # 处理 put 请求
     def put(self, request, **uri_params):
         res = self.begin(request, uri_params)
-        if res[SETTINGS.CODE] == 0:
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             res = self.put_model()
         return self.process_response(res)
 
     # 处理 delete 请求
     def delete(self, request, **uri_params):
         res = self.begin(request, uri_params)
-        if res[SETTINGS.CODE] == 0:
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             res = self.delete_model()
         return self.process_response(res)
