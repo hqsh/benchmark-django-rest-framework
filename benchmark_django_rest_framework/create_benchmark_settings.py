@@ -61,6 +61,8 @@ def GET_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None, msg_append=None
         res[MSG] += msg_append
     if data:
         res[DATA] = data
+    else:
+        res[DATA] = []
     return res
 
 
@@ -110,7 +112,22 @@ LIMIT = 'limit'
 # The keyword of http get requests for the data order.
 ORDER_BY = 'order_by'
 
-# The keyword of django model primary key
+# The keyword of django Q object for http get request to filter model.
+# For example, /employee?Q=[employee_name=EmployeeAX1$employee_id=1|employee_name=EmployeeAX2$employee_id=2,
+# department=1$employee_id=1|department=4$employee_id=8] is same as filter model:
+# Employee.objects.filter(Q(employee_name=EmployeeAX1, employee_id=1) | Q(employee_name=EmployeeAX2, employee_id=2),
+# Q(department=1, employee_id=1) | Q(department=4, employee_id=8))
+Q = 'Q'
+
+# The keyword of "or" splitter for several django Q objects.
+Q_OR = '|'
+
+# The keyword of "and" splitter in one django Q object.
+# You cannot use "&" because it is the splitter for several parameters in http get request.
+# And you cannot use "," because it is the splitter of elements in a list in this framework.
+Q_AND = '$'
+
+# The keyword of django model primary key.
 MODEL_PRIMARY_KEY = 'pk'
 
 # When some models use delete flag, the http delete requests don't delete the items of models, but they set the

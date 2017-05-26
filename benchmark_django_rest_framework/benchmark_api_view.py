@@ -1,5 +1,6 @@
 # -*- coding:utf-8 -*-
 
+from django.db.models import Q
 from django.http import JsonResponse, StreamingHttpResponse
 from rest_framework.views import APIView
 import copy, django, json, logging, sys
@@ -72,6 +73,7 @@ class BenchmarkAPIView(APIView):
         self.select_related = None
         self.values = None
         self.values_white_list = True
+        self.Qs = None
 
     @staticmethod
     def get_response_by_code(code=SETTINGS.SUCCESS_CODE, msg=None, data=None, msg_append=None):
@@ -176,14 +178,14 @@ class BenchmarkAPIView(APIView):
         self.check_primary_model('get_model')
         params = self.params
         params.update(self.uri_params)
-        data = self.primary_model.get_model(params=params, select_related=self.select_related,
-                                            values=self.values, values_white_list=self.values_white_list
-                                            )
-        if type(data) == dict and SETTINGS.CODE in data.keys() and SETTINGS.MSG in data.keys() and \
-                len(data) == 2 and data[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
-            return data
-        res = self.get_response_by_code(SETTINGS.SUCCESS_CODE)
-        res[SETTINGS.DATA] = data
+        res = self.primary_model.get_model(params=params, select_related=self.select_related, values=self.values,
+                                           values_white_list=self.values_white_list, Qs=self.Qs
+                                           )
+        # if type(data) == dict and SETTINGS.CODE in data.keys() and SETTINGS.MSG in data.keys() and \
+        #         len(data) == 2 and data[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
+        #     return data
+        # res = self.get_response_by_code(SETTINGS.SUCCESS_CODE)
+        # res[SETTINGS.DATA] = data
         return res
 
     # post 请求对应的 model 操作
@@ -249,6 +251,21 @@ class BenchmarkAPIView(APIView):
                 if isinstance(value, str):
                     value = [value]
                 self.values = value
+            elif key == SETTINGS.Q:
+                if not isinstance(value, list):
+                    value = [value]
+                self.Qs = []
+                for several_q in value:
+                    list_q = several_q.split(SETTINGS.Q_OR)
+                    _several_q = []
+                    for q in list_q:
+                        _q = {}
+                        list_param_value = q.split(SETTINGS.Q_AND)
+                        for param_value in list_param_value:
+                            param_name, param_value = param_value.split('=')
+                            _q[param_name] = param_value
+                        _several_q.append(_q)
+                    self.Qs.append(_several_q)
             else:
                 self.params[key] = value
         self.uri_params = uri_params

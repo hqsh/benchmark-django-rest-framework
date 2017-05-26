@@ -1,5 +1,6 @@
 # -*- coding:utf-8 -*-
 
+from collections import OrderedDict
 from django.db.models import Q
 from django.forms.models import model_to_dict
 import django, json, traceback
@@ -79,7 +80,7 @@ class BenchmarkModel(object):
             dict_item[key] = cls.get_json(key, value)
 
     @classmethod
-    def filter_model(cls, params=None, query_set=None, select_related=None):
+    def filter_model(cls, params=None, query_set=None, select_related=None, Qs=None):
         model_filter = {}
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             model_filter[SETTINGS.MODEL_DELETE_FLAG] = 0
@@ -104,6 +105,18 @@ class BenchmarkModel(object):
                 return cls.get_response_by_code(1, str(e))
         else:
             query_set = query_set.filter(**model_filter)
+        if Qs is not None:
+            list_q = []
+            for several_q in Qs:
+                _several_q = None
+                for q in several_q:
+                    if _several_q is None:
+                        _several_q = Q(**q)
+                    else:
+                        _several_q |= Q(**q)
+                list_q.append(_several_q)
+            for q in list_q:
+                query_set = query_set.filter(q)
         if params is not None and SETTINGS.ORDER_BY in params:
             order_by_field_name = params[SETTINGS.ORDER_BY] if params[SETTINGS.ORDER_BY][0] != '-' else params[SETTINGS.ORDER_BY][1:]
             if hasattr(cls, order_by_field_name):
@@ -169,12 +182,12 @@ class BenchmarkModel(object):
         return query_set
 
     @classmethod
-    def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True):
+    def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None):
         relates = {}
         relates_keys = []    # relates, 为避免重复的统计进去
         level_relates = []
         list_data = []
-        query_set = cls.filter_model(params, query_set)
+        query_set = cls.filter_model(params, query_set, Qs=Qs)
         try:
             offset = int(params[SETTINGS.OFFSET])
         except:
@@ -302,7 +315,7 @@ class BenchmarkModel(object):
             for level, level_relate in enumerate(level_relates):
                 if level == 0:
                     if len(level_relate) > 0:
-                        select_related_fields = {}
+                        select_related_fields = OrderedDict()
                         for root in level_relate:
                             select_related_fields[root['full_name']] = root['related_model']
                         query_set = cls.get_select_related(query_set, select_related_fields, list_data)
@@ -329,7 +342,7 @@ class BenchmarkModel(object):
                                         cls.get_json_in_dict(dict_item)
                                         pre_root_dict[field_name].append(dict_item)
                                 else:
-                                    select_related_fields = {}
+                                    select_related_fields = OrderedDict()
                                     for node in root['level_nodes']:
                                         select_related_fields[node['full_name'][len(root['full_name'])+2:]] = node['related_model']
                                     pre_root_dict[field_name_objects] = cls.get_select_related(
@@ -345,22 +358,23 @@ class BenchmarkModel(object):
                 cls.get_json_in_dict(dict_item)
                 list_data.append(dict_item)
         cls.delete_query_set(list_data)
-        return cls.filter_fields(values, values_white_list, list_data)
+        list_data = cls.filter_fields(data=list_data, values=values, values_white_list=values_white_list)
+        return cls.get_response_by_code(data=list_data)
 
     @classmethod
-    def filter_fields(cls, values, values_white_list, res):
+    def filter_fields(cls, data, values, values_white_list=True):
         if isinstance(values, list):
-            _res = []
-            for item in res:
+            res = []
+            for item in data:
                 _item = {}
                 for key, value in item.items():
                     if key in values and values_white_list:
                         _item[key] = value
                     elif key not in values and not values_white_list:
                         _item[key] = value
-                _res.append(_item)
-            return _res
-        return res
+                res.append(_item)
+            return res
+        return data
 
     @classmethod
     def get_model_field_names(cls, model=None):
