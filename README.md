@@ -8,6 +8,5 @@ Then, add the codes as below in the django settings.py file.
 
 BENCHMARK_SETTINGS = 'your_django_project_directory_name.benchmark_settings'
 
-Last, add the codes as below in "__init__.py" file in your django project directory.
+Insert BENCHMARK_SETTINGS into the INSTALLED_APPS.
 
-import your_django_project_directory_name.benchmark_settings
