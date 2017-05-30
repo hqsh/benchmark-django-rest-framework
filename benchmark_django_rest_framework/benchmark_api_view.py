@@ -1,6 +1,5 @@
 # -*- coding:utf-8 -*-
 
-from django.db.models import Q
 from django.http import JsonResponse, StreamingHttpResponse
 from rest_framework.views import APIView
 import copy, django, json, logging, sys

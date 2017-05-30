@@ -546,7 +546,7 @@ class BenchmarkModel(object):
                     else:
                         post_data_[key] = value
                 exist_item = cls.objects.get(**post_data_)
-                if not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
+                if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
                     return cls.get_response_by_code(1, str(e))
                 if SETTINGS.MODEL_DELETE_FLAG is not None and hasattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
                     setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 1)
