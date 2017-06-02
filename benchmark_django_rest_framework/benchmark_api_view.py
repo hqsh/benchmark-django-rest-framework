@@ -55,6 +55,7 @@ class BenchmarkAPIView(APIView):
                 cls.view_not_support_methods = SETTINGS.DICT_VIEW_NOT_SUPPORT_METHODS[view_name]
             else:
                 cls.view_not_support_methods = ()
+        cls.using = getattr(cls, SETTINGS.USING, 'default')
         cls.logger = Logger()
         cls.is_ready = True
 
@@ -178,7 +179,7 @@ class BenchmarkAPIView(APIView):
         params = self.params
         params.update(self.uri_params)
         res = self.primary_model.get_model(params=params, select_related=self.select_related, values=self.values,
-                                           values_white_list=self.values_white_list, Qs=self.Qs
+                                           values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
                                            )
         # if type(data) == dict and SETTINGS.CODE in data.keys() and SETTINGS.MSG in data.keys() and \
         #         len(data) == 2 and data[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
@@ -195,7 +196,7 @@ class BenchmarkAPIView(APIView):
             post_data.update(data)
         if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
             return self.get_response_by_code(12)
-        return self.primary_model.post_model(post_data, user=self.user.get_username())
+        return self.primary_model.post_model(post_data, user=self.user.get_username(), using=self.using)
 
     def get_uri_params_data(self, data=None):
         post_data = copy.deepcopy(self.data)
@@ -208,14 +209,14 @@ class BenchmarkAPIView(APIView):
     def put_model(self, data=None):
         self.check_primary_model('put_model')
         post_data = self.get_uri_params_data(data)
-        return self.primary_model.put_model(post_data, user=self.user.get_username())
+        return self.primary_model.put_model(post_data, user=self.user.get_username(), using=self.using)
 
     # delete 请求对应的 model 操作
     def delete_model(self):
         self.check_primary_model('delete_model')
         data = copy.deepcopy(self.data)
         data.update(self.uri_params)
-        return self.primary_model.delete_model(data, user=self.user.get_username())
+        return self.primary_model.delete_model(data, user=self.user.get_username(), using=self.using)
 
     # 处理各种请求的入口，解析各字段并进行处理
     def begin(self, request, uri_params={}):

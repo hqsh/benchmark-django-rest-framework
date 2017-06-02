@@ -127,6 +127,9 @@ Q_OR = '|'
 # And you cannot use "," because it is the splitter of elements in a list in this framework.
 Q_AND = '$'
 
+# The keyword of using django multiple databases.
+USING = 'using'
+
 # The keyword of django model primary key.
 MODEL_PRIMARY_KEY = 'pk'
 

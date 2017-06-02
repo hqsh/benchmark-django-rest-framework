@@ -80,7 +80,7 @@ class BenchmarkModel(object):
             dict_item[key] = cls.get_json(key, value)
 
     @classmethod
-    def filter_model(cls, params=None, query_set=None, select_related=None, Qs=None):
+    def filter_model(cls, params=None, query_set=None, select_related=None, Qs=None, using='default'):
         model_filter = {}
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             model_filter[SETTINGS.MODEL_DELETE_FLAG] = 0
@@ -91,20 +91,20 @@ class BenchmarkModel(object):
         if query_set is not None and len(model_filter) == 0:
             pass
         elif query_set is None and len(model_filter) == 0:
-            query_set = cls.objects.filter(**model_filter)
+            query_set = cls.objects.using(using).filter(**model_filter)
         elif query_set is None and len(model_filter) > 0:
             try:
-                query_set = cls.objects.filter(**model_filter)
+                query_set = cls.objects.using(using).filter(**model_filter)
             except django.core.exceptions.FieldError:
                 try:
                     model_filter.pop(SETTINGS.MODEL_DELETE_FLAG)
-                    query_set = cls.objects.filter(**model_filter)
+                    query_set = cls.objects.using(using).filter(**model_filter)
                 except Exception as e:
                     return cls.get_response_by_code(1, str(e))
             except Exception as e:
                 return cls.get_response_by_code(1, str(e))
         else:
-            query_set = query_set.filter(**model_filter)
+            query_set = query_set.using(using).filter(**model_filter)
         if Qs is not None:
             list_q = []
             for several_q in Qs:
@@ -116,7 +116,7 @@ class BenchmarkModel(object):
                         _several_q |= Q(**q)
                 list_q.append(_several_q)
             for q in list_q:
-                query_set = query_set.filter(q)
+                query_set = query_set.using(using).filter(q)
         if params is not None and SETTINGS.ORDER_BY in params:
             order_by_field_name = params[SETTINGS.ORDER_BY] if params[SETTINGS.ORDER_BY][0] != '-' else params[SETTINGS.ORDER_BY][1:]
             if hasattr(cls, order_by_field_name):
@@ -182,12 +182,12 @@ class BenchmarkModel(object):
         return query_set
 
     @classmethod
-    def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None):
+    def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None, using='default'):
         relates = {}
         relates_keys = []    # relates, 为避免重复的统计进去
         level_relates = []
         list_data = []
-        query_set = cls.filter_model(params, query_set, Qs=Qs)
+        query_set = cls.filter_model(params, query_set, Qs=Qs, using=using)
         try:
             offset = int(params[SETTINGS.OFFSET])
         except:
@@ -395,7 +395,7 @@ class BenchmarkModel(object):
     # "unique_together" should be define in benchmark_settings.py.
     # "unique_together" function (detect for unique constraint) is processed here.
     @classmethod
-    def check_unique_together(cls, data, pk=None):
+    def check_unique_together(cls, data, pk=None, using='default'):
         unique_together = cls.get_unique_together()
         for field_names in unique_together:
             unique_data = {}
@@ -413,7 +413,7 @@ class BenchmarkModel(object):
                 unique_data[SETTINGS.MODEL_DELETE_FLAG] = 0
             if has_unique_together_fields:    # check whether has conflicted data by unique constraint in model
                 list_keys = []
-                query_set = cls.objects.all()
+                query_set = cls.objects.using(using).all()
                 for unique_key, unique_value in unique_data.items():
                     if type(unique_value) is list:
                         list_keys.append(unique_key)
@@ -423,9 +423,9 @@ class BenchmarkModel(object):
                                 q = Q(**{unique_key: _unique_value})
                             else:
                                 q = q | Q(**{unique_key: _unique_value})
-                        query_set = query_set.filter(q)
+                        query_set = query_set.using(using).filter(q)
                     else:
-                        query_set = query_set.filter(**{unique_key: unique_value})
+                        query_set = query_set.using(using).filter(**{unique_key: unique_value})
                 if pk is not None and len(list_keys) > 0:    # put
                     return cls.get_response_by_code(10, msg=(list_keys,))
                 if query_set.exists():
@@ -438,7 +438,7 @@ class BenchmarkModel(object):
         return cls.get_response_by_code(0)
 
     @classmethod
-    def post_model(cls, post_data, user=None):
+    def post_model(cls, post_data, user=None, using='default'):
         del_keys = []
         foreign_key_add = {}
         foreign_key_del = []
@@ -456,7 +456,7 @@ class BenchmarkModel(object):
                     field = getattr(cls, key).field
                 if not is_relationship_field and field.field_name == primary_key_name \
                         or is_relationship_field and field.name == primary_key_name:
-                    exist_item = cls.objects.filter(pk=value).first()
+                    exist_item = cls.objects.using(using).filter(pk=value).first()
                     if exist_item is not None:
                         if SETTINGS.MODEL_DELETE_FLAG is None:
                             return cls.get_response_by_code(4)
@@ -473,8 +473,8 @@ class BenchmarkModel(object):
                             else:
                                 values = [value]
                             for _value in values:
-                                if field.related_model.objects.filter(**{field.target_field.name: _value}).exists():
-                                    related_item = field.related_model.objects.get(**{field.target_field.name: _value})
+                                if field.related_model.objects.using(using).filter(**{field.target_field.name: _value}).exists():
+                                    related_item = field.related_model.objects.using(using).get(**{field.target_field.name: _value})
                                     if hasattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
                                         if getattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
                                             return cls.get_response_by_code(8, msg=(key, _value))
@@ -496,7 +496,7 @@ class BenchmarkModel(object):
         for key, value in foreign_key_add.items():
             post_data[key] = value
         if SETTINGS.MODEL_DELETE_FLAG is not None and exist_item is None:
-            res = cls.check_unique_together(post_data_before_foreign_key_process)
+            res = cls.check_unique_together(post_data_before_foreign_key_process, using=using)
             if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                 return res
         pks = []
@@ -533,7 +533,7 @@ class BenchmarkModel(object):
                             setattr(exist_item, SETTINGS.MODEL_CREATOR, user)
                         if SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                             setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
-                    exist_item.save()
+                    exist_item.save(using=using)
                     pks.append(exist_item.pk)
             except django.db.utils.IntegrityError as e:
                 if hasattr(e, 'args'):
@@ -545,14 +545,14 @@ class BenchmarkModel(object):
                         post_data_[key + '__in'] = value
                     else:
                         post_data_[key] = value
-                exist_item = cls.objects.get(**post_data_)
+                exist_item = cls.objects.using(using).get(**post_data_)
                 if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
                     return cls.get_response_by_code(1, str(e))
                 if SETTINGS.MODEL_DELETE_FLAG is not None and hasattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
                     setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 1)
                 if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                     setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
-                exist_item.save()
+                exist_item.save(using=using)
                 pks.append(exist_item.pk)
             for key, value in many_to_many_relations.items():
                 if isinstance(value, list):
@@ -570,7 +570,7 @@ class BenchmarkModel(object):
                     setattr(exist_item, key, value)
                 if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                     setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
-                exist_item.save()
+                exist_item.save(using=using)
                 pks.append(exist_item.pk)
             except Exception as e:
                 print(traceback.format_exc())
@@ -580,7 +580,7 @@ class BenchmarkModel(object):
         return res
 
     @classmethod
-    def put_model(cls, post_data, user=None):
+    def put_model(cls, post_data, user=None, using='default'):
         primary_key_name = cls._meta.pk.attname
         if primary_key_name in post_data.keys():
             if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
@@ -615,7 +615,7 @@ class BenchmarkModel(object):
         for key, value in foreign_key_add.items():
             post_data[key] = value
         try:
-            m = cls.objects.get(pk=pk)
+            m = cls.objects.using(using).get(pk=pk)
         except:
             return cls.get_response_by_code(6)
         # when using delete flag, you cannot define "unique_together" in models.
@@ -624,7 +624,7 @@ class BenchmarkModel(object):
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             update_data = model_to_dict(m)
             update_data.update(post_data)
-            res = cls.check_unique_together(post_data_before_foreign_key_process, pk=m.pk)
+            res = cls.check_unique_together(post_data_before_foreign_key_process, pk=m.pk, using=using)
             if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                 return res
         if SETTINGS.MODEL_DELETE_FLAG is not None:
@@ -635,18 +635,19 @@ class BenchmarkModel(object):
         if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(m, SETTINGS.MODEL_MODIFIER):
             setattr(m, SETTINGS.MODEL_MODIFIER, user)
         try:
-            m.save()
+            m.save(using=using)
         except Exception as e:
             print(traceback.format_exc())
             return cls.get_response_by_code(1, str(e))
         return cls.get_response_by_code(0)
 
     @classmethod
-    def delete_related_models(cls, m=None, pk=None, delete_flag=True, user=None, modifier=None, delete_time=None):
+    def delete_related_models(cls, m=None, pk=None, delete_flag=True, user=None, modifier=None, delete_time=None,
+                              using='default'):
         model = cls if m is None else m.__class__
         if m is None:
             try:
-                m = cls.objects.get(pk=pk)
+                m = cls.objects.using(using).get(pk=pk)
             except:
                 return cls.get_response_by_code(6, data={'model': cls.__name__, 'pk': pk})
             if SETTINGS.MODEL_DELETE_FLAG:
@@ -663,7 +664,7 @@ class BenchmarkModel(object):
             if m_modifier is None or (modifier is not None and modifier != m_modifier):
                 return cls.get_response_by_code(0)
         if not cls.model_has_delete_flag():    # 警告: 关联的表如果有 delete flag, 也会被删除
-            m.delete()
+            m.delete(using=using)
             return cls.get_response_by_code(0)
         else:
             if cls.model_has_modifier() and user is not None:
@@ -674,15 +675,16 @@ class BenchmarkModel(object):
                 else:
                     setattr(m, SETTINGS.MODEL_MODIFIER, user)
             setattr(m, SETTINGS.MODEL_DELETE_FLAG, 1 if delete_flag else 0)
-            m.save()
+            m.save(using=using)
             res_data = []
             for field in model._meta.get_fields():
                 if field.one_to_many:
                     related_model = field.related_model
                     remote_field_name_in_db = field.remote_field.attname    # name or attname or column
-                    query_set = related_model.objects.filter(**{remote_field_name_in_db: m.pk})
+                    query_set = related_model.objects.using(using).filter(**{remote_field_name_in_db: m.pk})
                     for item in query_set:
-                        res = cls.delete_related_models(m=item, delete_flag=delete_flag, user=user, modifier=m_modifier, delete_time=delete_time)
+                        res = cls.delete_related_models(m=item, delete_flag=delete_flag, user=user, modifier=m_modifier,
+                                                        delete_time=delete_time, using=using)
                         if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:    # code = 7
                             res_data.append(res[SETTINGS.DATA])
             if len(res_data) > 0:
@@ -690,7 +692,7 @@ class BenchmarkModel(object):
         return cls.get_response_by_code(0)
 
     @classmethod
-    def delete_model(cls, data, user=None):
+    def delete_model(cls, data, user=None, using='default'):
         if 'pk' in data.keys():
             if 'delete_flag' in data.keys():
                 delete_flag = data['delete_flag']
@@ -699,7 +701,7 @@ class BenchmarkModel(object):
             # check every pk
             if isinstance(data['pk'], list):
                 pks = data['pk']
-                query_set = cls.objects.all()
+                query_set = cls.objects.using(using).all()
                 all_pk = [_.pk for _ in query_set]
                 if cls.model_has_delete_flag():
                     all_delete_flag = [False if getattr(_, SETTINGS.MODEL_DELETE_FLAG) == 0 else True for _ in query_set]
@@ -720,7 +722,7 @@ class BenchmarkModel(object):
                 pk = data['pk']
                 pks = [pk]
                 try:
-                    m = cls.objects.get(pk=pk)
+                    m = cls.objects.using(using).get(pk=pk)
                 except:
                     return cls.get_response_by_code(6, data={'pk': pk})
                 m_delete_flag = cls.model_get_delete_flag(m)
@@ -730,7 +732,7 @@ class BenchmarkModel(object):
                         return cls.get_response_by_code(7, data={'pk': pk})
             # delete
             for pk in pks:
-                res = cls.delete_related_models(pk=pk, delete_flag=delete_flag, user=user)
+                res = cls.delete_related_models(pk=pk, delete_flag=delete_flag, user=user, using=using)
                 if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                     return res
             return cls.get_response_by_code(0)
