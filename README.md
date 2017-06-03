@@ -1,5 +1,7 @@
 # benchmark-django-rest-framework
 
+A introduction for this framework is in https://github.com/hqsh/benchmark_django_rest_framework_demo/blob/master/Introduction/Introduction.md.
+
 After you installed this framework. Run the command as below in the directory which include the django settings.py file.
 
 python -m benchmark_django_rest_framework.create_benchmark_settings
