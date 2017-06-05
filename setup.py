@@ -31,6 +31,6 @@ setup(
     ],
     packages=('benchmark_django_rest_framework', ),
     py_modules=('benchmark-django-rest-framework', ),
-    install_requires=['django>=1.9.0',
+    install_requires=['django>=1.10.0',
                       'djangorestframework>=3.5.0']
 )
