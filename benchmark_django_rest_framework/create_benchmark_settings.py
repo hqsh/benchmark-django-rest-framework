@@ -8,44 +8,51 @@ from django.http import JsonResponse
 import copy
 
 
-# The http response json data field names, you can modify them to fit in with your web sit. The SUCCESS_CODE cannot be
-# set to any number below 200 (200 is allowed). Otherwise it maybe conflict with the codes defined in this framework.
+# The http response json data field names, you can modify them to fit in with your web sit.
 CODE = 'code'
 MSG = 'msg'
 DATA = 'data'
 SUCCESS_CODE = 0
+CODE_OFFSET = 0    # the offset of error codes defined by this framework
 
 # The http response json format
-# The code 0 represents the successful response. The error codes which smaller than 200 is defined by the framework.
+# The error codes which smaller than 200 before added by CODE_OFFSET is defined by the framework.
 # It's not recommended to define the error codes by the any web site itself.
 # http 响应的 json 格式配置
-# CODE 为 SUCCESS_CODE 代表成功的响应. 小于 200 的 CODE 用于该框架, 不推荐使用小于 200 的 CODE 用于站点自定义的错误.
-# 仅支持对 SUCCESS_CODE 值进行修改成 200 或 200 以上, 否则会有不可预期的结果
+# 未增加 CODE_OFFSET 偏移量的小于200的错误状态码，用于该框架的保留错误码
+# 不能被网站自定义
 DICT_RESPONSE_BY_CODE = {
-    '0': {CODE: SUCCESS_CODE, MSG: 'success'},
-    '1': {CODE: 1, MSG: 'raise exception'},    # the msg should be replaced by the except reason
-    '2': {CODE: 2, MSG: 'request parameters should include "pk" as the primary key for the primary model of the uri'},
-    '3': {CODE: 3, MSG: 'this api does not support this http method'},
-    '4': {CODE: 4, MSG: 'insert failed: the model has the data with the same primary key as the post data'},
-    '5': {CODE: 5, MSG: 'insert failed: one of the relationship keys is already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
-    '6': {CODE: 6, MSG: 'update or delete failed: the data does not exist'},
-    '7': {CODE: 7, MSG: 'update or delete failed: the data exist, but is already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
-    '8': {CODE: 8, MSG: 'insert failed: the foreign key (%s = %s) is already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
-    '9': {CODE: 9, MSG: 'insert failed: the foreign key (%s = %s) is not exist'},
-    '10': {CODE: 10, MSG: 'update failed: the value of the request data %s cannot be list'},
-    '11': {CODE: 11, MSG: 'deleted, but some foreign key has already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
-    '12': {CODE: 12, MSG: 'insert failed: the post request cannot contains "pk" parameter'},
-    '13': {CODE: 13, MSG: 'insert failed: the post request should has some legal request data'},
-    '14': {CODE: 14, MSG: 'invalid select_related field: '},
-    '15': {CODE: 15, MSG: 'request parameter does not exist: '},
-    '16': {CODE: 16, MSG: 'request data in body does not exist: '},
-    '17': {CODE: 17, MSG: 'the format of date time string in request parameter is not correct, it should like "2017-03-24 20:05:39"'},
-    '18': {CODE: 18, MSG: 'the format of date string in request parameter is not correct, it should like "2017-03-24"'},
-    '19': {CODE: 19, MSG: 'the format of time string in request parameter is not correct, it should like "20:05:39"'},
-    '100': {CODE: 100, MSG: 'login failed'},
-    '101': {CODE: 101, MSG: 'anonymous user cannot access this api, should login first'},
+    str(SUCCESS_CODE): {CODE: SUCCESS_CODE, MSG: 'success'},
+    '1': {MSG: 'raise exception'},    # the msg should be replaced by the except reason
+    '2': {MSG: 'request parameters should include "pk" as the primary key for the primary model of the uri'},
+    '3': {MSG: 'this api does not support this http method'},
+    '4': {MSG: 'insert failed: the model has the data with the same primary key as the post data'},
+    '5': {MSG: 'insert failed: one of the relationship keys is already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
+    '6': {MSG: 'update or delete failed: the data does not exist'},
+    '7': {MSG: 'update or delete failed: the data exist, but is already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
+    '8': {MSG: 'insert failed: the foreign key (%s = %s) is already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
+    '9': {MSG: 'insert failed: the foreign key (%s = %s) is not exist'},
+    '10': {MSG: 'update failed: the value of the request data %s cannot be list'},
+    '11': {MSG: 'deleted, but some foreign key has already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
+    '12': {MSG: 'insert failed: the post request cannot contains "pk" parameter'},
+    '13': {MSG: 'insert failed: the post request should has some legal request data'},
+    '14': {MSG: 'invalid select_related field: '},
+    '15': {MSG: 'request parameter does not exist: '},
+    '16': {MSG: 'request data in body does not exist: '},
+    '17': {MSG: 'the format of date time string in request parameter is not correct, it should like "2017-03-24 20:05:39"'},
+    '18': {MSG: 'the format of date string in request parameter is not correct, it should like "2017-03-24"'},
+    '19': {MSG: 'the format of time string in request parameter is not correct, it should like "20:05:39"'},
+    '20': {MSG: 'request parameters are not valid'},
+    '21': {MSG: 'anonymous user cannot access this api, should login first'},
+    '22': {MSG: 'user haven\'t the right to access this api'},
+    '23': {MSG: 'user are not the creator of the pk: '},
+    '100': {MSG: 'login failed'},
+    '101': {MSG: 'anonymous user cannot access this api, should login first'},
 }
 
+for code, res in DICT_RESPONSE_BY_CODE.items():
+    if code < 200:
+        res[CODE] = int(code) + CODE_OFFSET
 
 def GET_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None, msg_append=None):
     if code == SUCCESS_CODE:
@@ -103,11 +110,23 @@ VALUES = 'values'
 
 # The keyword of the begin position of http get response data.
 # It usually used with LIMIT keyword, for limit the number of the search result data.
+# The minimal value of OFFSET is 1. If the value of OFFSET is not correct, set it to 1.
+# If the value of OFFSET is bigger than the number of total result data, return an empty list.
 OFFSET = 'offset'
 
 # The keyword of the maximum number of http get response data.
-# It usually used with OFFSET keyword, for limit the number of the search result data.
+# It usually used with OFFSET or PAGE keyword, for limit the number of the search result data.
+# The minimal value of LIMIT is 1. If the value of LIMIT is not correct, return all list.
 LIMIT = 'limit'
+
+# The keyword of the page number of http get response data.
+# It usually used with LIMIT keyword, for limit the number of the search result data.
+# If OFFSET and PAGE keywords are both appear in the parameters, omit the OFFSET.
+# The range of PAGE value is between 1 and ⌈COUNT/PAGE⌉. If the value of PAGE is not correct, set it to 1.
+PAGE = 'page'
+
+# The keyword of the number of data in http get response.
+COUNT = 'count'
 
 # The keyword of http get requests for the data order.
 ORDER_BY = 'order_by'
@@ -124,11 +143,29 @@ Q_OR = '|'
 
 # The keyword of "and" splitter in one django Q object.
 # You cannot use "&" because it is the splitter for several parameters in http get request.
-# And you cannot use "," because it is the splitter of elements in a list in this framework.
+# And you cannot use "," because it is the splitter of elements in the list in http get request by this framework.
 Q_AND = '$'
 
-# The keyword of using django multiple databases.
+# The class variable name of sub-class of BenchmarkApiView for using django multiple databases.
+# The choice of value of this variable can be the DATABASES.keys() defined in django "settings.py" file.
 USING = 'using'
+
+# The class variable name of sub-class of BenchmarkApiView for api access authorization.
+# The value of this variable is a dict as follow:
+# {'get': 'all', 'post': 'user', 'put': 'staff', 'delete': None}
+# The choice of the keys in this dict are the 4 http methods: get, post, put and delete.
+# The choice of the values of this dict are as follow:
+# None: the api does not support the http method of the api.
+# 'all': everyone, including without login, can access the http method of the api.
+# 'user': every login users can access the http method of the api.
+# 'staff': every staffs or admin can access the http method of the api.
+# 'admin': every admins can access the http method of the api.
+# 'creator': every creators and admins can access the http method (put or delete) of the api.
+#            the creator is defined in the primary_model and set to request.user.username in post method.
+#            so the post method of the same api should be 'user', 'staff' or 'admin'.
+#            and the variable name of the creator in all models is defined in MODEL_CREATOR.
+# each undefined access of method
+ACCESS = 'access'
 
 # The keyword of django model primary key.
 MODEL_PRIMARY_KEY = 'pk'

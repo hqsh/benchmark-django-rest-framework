@@ -438,7 +438,7 @@ class BenchmarkModel(object):
         return cls.get_response_by_code(0)
 
     @classmethod
-    def post_model(cls, post_data, user=None, using='default'):
+    def post_model(cls, data, user=None, using='default'):
         del_keys = []
         foreign_key_add = {}
         foreign_key_del = []
@@ -447,7 +447,7 @@ class BenchmarkModel(object):
         exist_item = None
         many_to_many_relations = {}
         foreign_key_does_not_exist_msg = ''
-        for key, value in post_data.items():
+        for key, value in data.items():
             if key in field_names:
                 is_relationship_field = False
                 field = getattr(cls, key)
@@ -456,11 +456,11 @@ class BenchmarkModel(object):
                     field = getattr(cls, key).field
                 if not is_relationship_field and field.field_name == primary_key_name \
                         or is_relationship_field and field.name == primary_key_name:
-                    exist_item = cls.objects.using(using).filter(pk=value).first()
-                    if exist_item is not None:
-                        if SETTINGS.MODEL_DELETE_FLAG is None:
-                            return cls.get_response_by_code(4)
-                        else:
+                    if SETTINGS.MODEL_DELETE_FLAG is None:
+                        pass    # has checked by serializer
+                    else:
+                        exist_item = cls.objects.using(using).filter(pk=value).first()
+                        if exist_item is not None:
                             if getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
                                 setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 0)
                             else:
@@ -481,7 +481,7 @@ class BenchmarkModel(object):
                                 else:
                                     return cls.get_response_by_code(9, msg=(key, _value))
                         foreign_key = field.attname
-                        foreign_key_add[foreign_key] = post_data[key]
+                        foreign_key_add[foreign_key] = data[key]
                         foreign_key_del.append(key)
                     elif field.many_to_many:
                         many_to_many_relations[key] = copy.deepcopy(value)
@@ -489,44 +489,44 @@ class BenchmarkModel(object):
             else:
                 del_keys.append(key)
         for key in del_keys:
-            del post_data[key]
-        post_data_before_foreign_key_process = copy.deepcopy(post_data)
+            del data[key]
+        data_before_foreign_key_process = copy.deepcopy(data)
         for key in foreign_key_del:
-            del post_data[key]
+            del data[key]
         for key, value in foreign_key_add.items():
-            post_data[key] = value
+            data[key] = value
         if SETTINGS.MODEL_DELETE_FLAG is not None and exist_item is None:
-            res = cls.check_unique_together(post_data_before_foreign_key_process, using=using)
+            res = cls.check_unique_together(data_before_foreign_key_process, using=using)
             if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                 return res
         pks = []
         if exist_item is None:
-            list_post_data = []    # to support batch insert by the values of request data in list
-            for key, _value in post_data.items():
+            list_data = []    # to support batch insert by the values of request data in list
+            for key, _value in data.items():
                 if isinstance(_value, list):
                     values = _value
                 else:
                     values = [_value]
-                if len(list_post_data) == 0:
+                if len(list_data) == 0:
                     for v in values:
-                        list_post_data.append({key: v})
+                        list_data.append({key: v})
                 else:
-                    last_loop_list_post_data = copy.deepcopy(list_post_data)
+                    last_loop_list_data = copy.deepcopy(list_data)
                     first_loop = True
                     for v in values:
                         if first_loop:
-                            for d in list_post_data:
+                            for d in list_data:
                                 d[key] = v
                             first_loop = False
                         else:
-                            for d in last_loop_list_post_data:
+                            for d in last_loop_list_data:
                                 _d = copy.deepcopy(d)
                                 _d[key] = v
-                                list_post_data.append(_d)
-            if len(list_post_data) == 0:
+                                list_data.append(_d)
+            if len(list_data) == 0:
                 return cls.get_response_by_code(13)
             try:
-                for pd in list_post_data:
+                for pd in list_data:
                     exist_item = cls(**pd)
                     if user is not None:
                         if SETTINGS.MODEL_CREATOR is not None and hasattr(exist_item, SETTINGS.MODEL_CREATOR):
@@ -537,15 +537,15 @@ class BenchmarkModel(object):
                     pks.append(exist_item.pk)
             except django.db.utils.IntegrityError as e:
                 if hasattr(e, 'args'):
-                    if e.args[0] == 1048:                         # field cannot be None (很可能还有其他类型的错误, 待增加)
+                    if e.args[0] == 1048 or e.args[0].startswith('NOT NULL constraint failed: '):    # field cannot be None (很可能还有其他类型的错误, 待增加)
                         return cls.get_response_by_code(1, str(e))
-                post_data_ = {}
-                for key, value in post_data.items():
+                data_ = {}
+                for key, value in data.items():
                     if isinstance(value, list):
-                        post_data_[key + '__in'] = value
+                        data_[key + '__in'] = value
                     else:
-                        post_data_[key] = value
-                exist_item = cls.objects.using(using).get(**post_data_)
+                        data_[key] = value
+                exist_item = cls.objects.using(using).get(**data_)
                 if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
                     return cls.get_response_by_code(1, str(e))
                 if SETTINGS.MODEL_DELETE_FLAG is not None and hasattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
@@ -566,7 +566,7 @@ class BenchmarkModel(object):
                         foreign_key_does_not_exist_msg += '    ' + key + '=' + v + ' does not exist'
         else:
             try:
-                for key, value in post_data.items():
+                for key, value in data.items():
                     setattr(exist_item, key, value)
                 if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                     setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
@@ -580,21 +580,21 @@ class BenchmarkModel(object):
         return res
 
     @classmethod
-    def put_model(cls, post_data, user=None, using='default'):
+    def put_model(cls, data, user=None, using='default'):
         primary_key_name = cls._meta.pk.attname
-        if primary_key_name in post_data.keys():
-            if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
-                post_data.pop(primary_key_name)
+        if primary_key_name in data.keys():
+            if SETTINGS.MODEL_PRIMARY_KEY in data.keys():
+                data.pop(primary_key_name)
             else:
-                post_data[SETTINGS.MODEL_PRIMARY_KEY] = post_data.pop(primary_key_name)
-        if SETTINGS.MODEL_PRIMARY_KEY not in post_data.keys():
+                data[SETTINGS.MODEL_PRIMARY_KEY] = data.pop(primary_key_name)
+        if SETTINGS.MODEL_PRIMARY_KEY not in data.keys():
             return cls.get_response_by_code(2)
-        pk = post_data.pop(SETTINGS.MODEL_PRIMARY_KEY)
+        pk = data.pop(SETTINGS.MODEL_PRIMARY_KEY)
         del_keys = []
         foreign_key_add = {}
         foreign_key_del = []
         field_names = cls.get_model_field_names()
-        for key in post_data.keys():
+        for key in data.keys():
             if key in field_names:
                 field = getattr(cls, key)
                 if hasattr(field, 'field'):
@@ -603,17 +603,17 @@ class BenchmarkModel(object):
                     continue
                 if field.many_to_one or field.one_to_one:
                     foreign_key = field.attname
-                    foreign_key_add[foreign_key] = post_data[key]
+                    foreign_key_add[foreign_key] = data[key]
                     foreign_key_del.append(key)
             else:
                 del_keys.append(key)
         for key in del_keys:
-            del post_data[key]
-        post_data_before_foreign_key_process = copy.deepcopy(post_data)
+            del data[key]
+        data_before_foreign_key_process = copy.deepcopy(data)
         for key in foreign_key_del:
-            del post_data[key]
+            del data[key]
         for key, value in foreign_key_add.items():
-            post_data[key] = value
+            data[key] = value
         try:
             m = cls.objects.using(using).get(pk=pk)
         except:
@@ -623,14 +623,14 @@ class BenchmarkModel(object):
         # "unique_together" function (detect for unique constraint) is processed here.
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             update_data = model_to_dict(m)
-            update_data.update(post_data)
-            res = cls.check_unique_together(post_data_before_foreign_key_process, pk=m.pk, using=using)
+            update_data.update(data)
+            res = cls.check_unique_together(data_before_foreign_key_process, pk=m.pk, using=using)
             if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                 return res
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             if getattr(m, SETTINGS.MODEL_DELETE_FLAG):
                 return cls.get_response_by_code(7)
-        for key, value in post_data.items():
+        for key, value in data.items():
             setattr(m, key, value)
         if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(m, SETTINGS.MODEL_MODIFIER):
             setattr(m, SETTINGS.MODEL_MODIFIER, user)

@@ -2,7 +2,8 @@
 
 from django.http import JsonResponse, StreamingHttpResponse
 from rest_framework.views import APIView
-import copy, django, json, logging, sys
+from rest_framework.serializers import ModelSerializer
+import copy, django, json, logging, rest_framework, re, sys
 
 
 SETTINGS = getattr(django.conf.settings, 'BENCHMARK_SETTINGS', None)
@@ -31,6 +32,14 @@ class Logger:
 
 
 class BenchmarkAPIView(APIView):
+    class PostSerializer(ModelSerializer):
+        class Meta:
+            pass
+
+    class PutSerializer(ModelSerializer):
+        class Meta:
+            pass
+
     @classmethod
     def init(cls):
         view_name = cls.__name__
@@ -57,6 +66,12 @@ class BenchmarkAPIView(APIView):
                 cls.view_not_support_methods = ()
         cls.using = getattr(cls, SETTINGS.USING, 'default')
         cls.logger = Logger()
+        cls.PostSerializer.Meta.model = cls.primary_model
+        cls.PostSerializer.Meta.fields = '__all__'
+        cls.PutSerializer.Meta.model = cls.primary_model
+        cls.PutSerializer.Meta.fields = '__all__'
+        if not hasattr(cls, 'access'):
+            cls.access = {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'}
         cls.is_ready = True
 
     def __init__(self):
@@ -188,12 +203,41 @@ class BenchmarkAPIView(APIView):
         # res[SETTINGS.DATA] = data
         return res
 
+    def serializer_check(self, data):
+        if self.method == 'post':
+            serializer = self.PostSerializer(data=data)
+        elif self.method == 'put':
+            serializer = self.PutSerializer(data=data)
+            for field_value in serializer.fields.values():
+                field_value.required = False
+        try:
+            serializer.is_valid(raise_exception=True)
+        except rest_framework.exceptions.ValidationError as e:
+            if SETTINGS.MODEL_DELETE_FLAG is None:
+                exception_detail = e.detail
+            else:
+                exception_detail = {}
+                for key, errors in e.detail.items():
+                    for error in errors:
+                        if re.match(r'[\w\d_]+ with this [\w\d_ ]+ id already exists.', error):
+                            errors.remove(error)
+                    if len(errors) != 0:
+                        exception_detail[key] = errors
+            if len(exception_detail) > 0:
+                return self.get_response_by_code(20, data=exception_detail)
+        except Exception as e:
+            return self.get_response_by_code(1, msg=str(e))
+        return None
+
     # post 请求对应的 model 操作
     def post_model(self, data=None):
         self.check_primary_model('post_model')
         post_data = copy.deepcopy(self.data)
         if data:
             post_data.update(data)
+        res = self.serializer_check(post_data)
+        if res is not None:
+            return res
         if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
             return self.get_response_by_code(12)
         return self.primary_model.post_model(post_data, user=self.user.get_username(), using=self.using)
@@ -209,6 +253,9 @@ class BenchmarkAPIView(APIView):
     def put_model(self, data=None):
         self.check_primary_model('put_model')
         post_data = self.get_uri_params_data(data)
+        res = self.serializer_check(post_data)
+        if res is not None:
+            return res
         return self.primary_model.put_model(post_data, user=self.user.get_username(), using=self.using)
 
     # delete 请求对应的 model 操作
@@ -217,6 +264,43 @@ class BenchmarkAPIView(APIView):
         data = copy.deepcopy(self.data)
         data.update(self.uri_params)
         return self.primary_model.delete_model(data, user=self.user.get_username(), using=self.using)
+
+    def check_access(self, pk=None):
+        if self.access[self.method] == 'all':    # every one can access
+            return self.get_response_by_code()
+        if self.access[self.method] is None:    # no one can access
+            return self.get_response_by_code(3)
+        if self.user.is_anonymous:
+            return self.get_response_by_code(21)
+        if self.access[self.method] == 'user':    # login user can access
+            return self.get_response_by_code()
+        if self.access[self.method] == 'staff':    # staff or admin can access
+            return self.get_response_by_code() if self.user.is_staff or self.user.is_admin else self.get_response_by_code(22)
+        if self.access[self.method] == 'admin':    # admin can access
+            return self.get_response_by_code() if self.user.is_admin else self.get_response_by_code(22)
+        if self.access[self.method] == 'creator':    # creator or admin can access put or delete method
+            if SETTINGS.MODEL_CREATOR not in self.primary_model._meta.get_fields():
+                raise Exception('primary model %s has no field %s' % (self.primary_model.__name__, SETTINGS.MODEL_CREATOR))
+            if pk is None:
+                return self.get_response_by_code(2)
+            if not isinstance(pk, (list, tuple)):
+                pk = [pk]
+            if SETTINGS.MODEL_DELETE_FLAG is None:
+                query_set = self.primary_model.objects.filter(pk__in=pk)
+                if query_set.count == 0:
+                    return self.get_response_by_code(6)
+            else:
+                query_set = self.primary_model.objects.filter(**{'pk__in': pk, SETTINGS.MODEL_DELETE_FLAG: 0})
+                if query_set.count == 0:
+                    return self.get_response_by_code(7)
+            not_creator_pks = []
+            for item in query_set:
+                creator = getattr(item, SETTINGS.MODEL_CREATOR, None)
+                if creator != self.user.username:
+                    not_creator_pks.append(item.pk)
+            if len(not_creator_pks) > 0:
+                return self.get_response_by_code(23)
+            return self.get_response_by_code()
 
     # 处理各种请求的入口，解析各字段并进行处理
     def begin(self, request, uri_params={}):
@@ -284,7 +368,13 @@ class BenchmarkAPIView(APIView):
         res = self.check_request_param_data()
         if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
             return res
-        return self.get_response_by_code(SETTINGS.SUCCESS_CODE)
+        pk = None
+        if self.method in ('put', 'delete'):
+            if 'pk' in self.uri_params:
+                pk = self.uri_params['pk']
+            elif 'pk' in self.data:
+                pk = self.data['pk']
+        return self.check_access(pk=pk)
 
     # 处理各种类型的返回
     @staticmethod
@@ -303,8 +393,8 @@ class BenchmarkAPIView(APIView):
         return self.process_response(res)
 
     # 处理 post 请求
-    def post(self, request):
-        res = self.begin(request)
+    def post(self, request, **uri_params):
+        res = self.begin(request, uri_params)
         if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             res = self.post_model()
         return self.process_response(res)
