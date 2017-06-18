@@ -2,7 +2,7 @@
 
 from collections import OrderedDict
 from django.db.models import Q
-from django.forms.models import model_to_dict
+from itertools import chain
 import django, json, traceback
 import copy, datetime, sys
 
@@ -86,7 +86,7 @@ class BenchmarkModel(object):
             model_filter[SETTINGS.MODEL_DELETE_FLAG] = 0
         if params is not None:
             for key, value in params.items():
-                if key not in [SETTINGS.ORDER_BY, SETTINGS.OFFSET, SETTINGS.LIMIT]:
+                if key not in [SETTINGS.ORDER_BY, SETTINGS.OFFSET, SETTINGS.LIMIT, SETTINGS.PAGE]:
                     model_filter[key] = value
         if query_set is not None and len(model_filter) == 0:
             pass
@@ -145,12 +145,30 @@ class BenchmarkModel(object):
         res.append(pre_location_relate['field_name'])
         return res
 
+    @staticmethod
+    def model_to_dict(instance, fields=None, exclude=None):
+        """
+        copy from django.forms.models.model_to_dict, but also return un-editable fields.
+        """
+        opts = instance._meta
+        data = {}
+        omit = getattr(SETTINGS, 'OMIT_UN_EDITABLE_FIELDS', False)
+        for f in chain(opts.concrete_fields, opts.private_fields, opts.many_to_many):
+            if omit and not getattr(f, 'editable', False):
+                continue
+            if fields and f.name not in fields:
+                continue
+            if exclude and f.name in exclude:
+                continue
+            data[f.name] = f.value_from_object(instance)
+        return data
+
     @classmethod
     def get_select_related(cls, query_set, select_related_fields, list_data):
         for related_field in select_related_fields.keys():
             query_set = query_set.select_related(related_field)
         for i, m in enumerate(query_set):
-            dict_m = model_to_dict(m)
+            dict_m = cls.model_to_dict(m)
             for relate_name, model in select_related_fields.items():
                 for relate_model_field in model._meta.get_fields():
                     name = relate_model_field.name
@@ -188,23 +206,24 @@ class BenchmarkModel(object):
         level_relates = []
         list_data = []
         query_set = cls.filter_model(params, query_set, Qs=Qs, using=using)
-        try:
-            offset = int(params[SETTINGS.OFFSET])
-        except:
-            offset = 1
-        if offset < 1:
-            offset = 1
-        try:
-            limit = int(params[SETTINGS.LIMIT])
-        except:
-            limit = 0
-        if limit < 0:
-            limit = 0
-        if limit == 0:
-            if offset > 1:
-                query_set = query_set[offset-1:]
-        else:
-            query_set = query_set[offset-1:offset-1+limit]
+        if SETTINGS.PAGE not in params.keys():
+            try:
+                offset = int(params[SETTINGS.OFFSET])
+            except:
+                offset = 1
+            if offset < 1:
+                offset = 1
+            try:
+                limit = int(params[SETTINGS.LIMIT])
+            except:
+                limit = 0
+            if limit < 0:
+                limit = 0
+            if limit == 0:
+                if offset > 1:
+                    query_set = query_set[offset-1:]
+            else:
+                query_set = query_set[offset-1:offset-1+limit]
         if select_related is not None:
             # create data structures of model relations
             num_select_related = []
@@ -321,7 +340,7 @@ class BenchmarkModel(object):
                         query_set = cls.get_select_related(query_set, select_related_fields, list_data)
                     else:
                         for item in query_set:
-                            dict_item = model_to_dict(item)
+                            dict_item = cls.model_to_dict(item)
                             cls.get_json_in_dict(dict_item)
                             list_data.append(dict_item)
                 else:
@@ -338,7 +357,7 @@ class BenchmarkModel(object):
                                 pre_root_dict[field_name] = []
                                 if len(root['level_nodes']) == 0:
                                     for item in pre_root_dict[field_name_objects]:
-                                        dict_item = model_to_dict(item)
+                                        dict_item = cls.model_to_dict(item)
                                         cls.get_json_in_dict(dict_item)
                                         pre_root_dict[field_name].append(dict_item)
                                 else:
@@ -354,7 +373,7 @@ class BenchmarkModel(object):
                                 root['list_dict_roots'].append(pre_root_dict[field_name])
         else:
             for item in query_set:
-                dict_item = model_to_dict(item)
+                dict_item = cls.model_to_dict(item)
                 cls.get_json_in_dict(dict_item)
                 list_data.append(dict_item)
         cls.delete_query_set(list_data)
@@ -430,153 +449,180 @@ class BenchmarkModel(object):
                     return cls.get_response_by_code(10, msg=(list_keys,))
                 if query_set.exists():
                     if pk is None:    # post
-                        return cls.get_response_by_code(5, data=[model_to_dict(_) for _ in query_set])
+                        return cls.get_response_by_code(5, data=[cls.model_to_dict(_) for _ in query_set])
                     else:             # put
                         for item in query_set:
                             if pk != item.pk:
-                                return cls.get_response_by_code(5, data=[model_to_dict(_) for _ in query_set])
-        return cls.get_response_by_code(0)
+                                return cls.get_response_by_code(5, data=[cls.model_to_dict(_) for _ in query_set])
+        return cls.get_response_by_code()
 
     @classmethod
     def post_model(cls, data, user=None, using='default'):
-        del_keys = []
-        foreign_key_add = {}
-        foreign_key_del = []
-        field_names = cls.get_model_field_names()
-        primary_key_name = cls._meta.pk.attname
-        exist_item = None
-        many_to_many_relations = {}
-        foreign_key_does_not_exist_msg = ''
-        for key, value in data.items():
-            if key in field_names:
-                is_relationship_field = False
-                field = getattr(cls, key)
-                if hasattr(field, 'field'):
-                    is_relationship_field = True
-                    field = getattr(cls, key).field
-                if not is_relationship_field and field.field_name == primary_key_name \
-                        or is_relationship_field and field.name == primary_key_name:
-                    if SETTINGS.MODEL_DELETE_FLAG is None:
-                        pass    # has checked by serializer
-                    else:
-                        exist_item = cls.objects.using(using).filter(pk=value).first()
-                        if exist_item is not None:
-                            if getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
-                                setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 0)
-                            else:
-                                return cls.get_response_by_code(4)
-                if is_relationship_field:
-                    if field.many_to_one or field.one_to_one :
-                        if SETTINGS.MODEL_DELETE_FLAG:
-                            if isinstance(value, list):    # 目前只有多对多关系表会有 list 参数
-                                values = value
-                            else:
-                                values = [value]
-                            for _value in values:
-                                if field.related_model.objects.using(using).filter(**{field.target_field.name: _value}).exists():
-                                    related_item = field.related_model.objects.using(using).get(**{field.target_field.name: _value})
-                                    if hasattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
-                                        if getattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
-                                            return cls.get_response_by_code(8, msg=(key, _value))
-                                else:
-                                    return cls.get_response_by_code(9, msg=(key, _value))
-                        foreign_key = field.attname
-                        foreign_key_add[foreign_key] = data[key]
-                        foreign_key_del.append(key)
-                    elif field.many_to_many:
-                        many_to_many_relations[key] = copy.deepcopy(value)
-                        del_keys.append(key)
-            else:
-                del_keys.append(key)
-        for key in del_keys:
-            del data[key]
-        data_before_foreign_key_process = copy.deepcopy(data)
-        for key in foreign_key_del:
-            del data[key]
-        for key, value in foreign_key_add.items():
-            data[key] = value
-        if SETTINGS.MODEL_DELETE_FLAG is not None and exist_item is None:
-            res = cls.check_unique_together(data_before_foreign_key_process, using=using)
-            if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
-                return res
-        pks = []
-        if exist_item is None:
-            list_data = []    # to support batch insert by the values of request data in list
-            for key, _value in data.items():
-                if isinstance(_value, list):
-                    values = _value
-                else:
-                    values = [_value]
-                if len(list_data) == 0:
-                    for v in values:
-                        list_data.append({key: v})
-                else:
-                    last_loop_list_data = copy.deepcopy(list_data)
-                    first_loop = True
-                    for v in values:
-                        if first_loop:
-                            for d in list_data:
-                                d[key] = v
-                            first_loop = False
-                        else:
-                            for d in last_loop_list_data:
-                                _d = copy.deepcopy(d)
-                                _d[key] = v
-                                list_data.append(_d)
-            if len(list_data) == 0:
-                return cls.get_response_by_code(13)
-            try:
-                for pd in list_data:
-                    exist_item = cls(**pd)
-                    if user is not None:
-                        if SETTINGS.MODEL_CREATOR is not None and hasattr(exist_item, SETTINGS.MODEL_CREATOR):
-                            setattr(exist_item, SETTINGS.MODEL_CREATOR, user)
-                        if SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
-                            setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
-                    exist_item.save(using=using)
-                    pks.append(exist_item.pk)
-            except django.db.utils.IntegrityError as e:
-                if hasattr(e, 'args'):
-                    if e.args[0] == 1048 or e.args[0].startswith('NOT NULL constraint failed: '):    # field cannot be None (很可能还有其他类型的错误, 待增加)
-                        return cls.get_response_by_code(1, str(e))
-                data_ = {}
-                for key, value in data.items():
-                    if isinstance(value, list):
-                        data_[key + '__in'] = value
-                    else:
-                        data_[key] = value
-                exist_item = cls.objects.using(using).get(**data_)
-                if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
-                    return cls.get_response_by_code(1, str(e))
-                if SETTINGS.MODEL_DELETE_FLAG is not None and hasattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
-                    setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 1)
-                if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
-                    setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
-                exist_item.save(using=using)
-                pks.append(exist_item.pk)
-            for key, value in many_to_many_relations.items():
-                if isinstance(value, list):
-                    values = value
-                else:
-                    values = [value]
-                for v in values:
-                    try:
-                        getattr(exist_item, key).add(v)
-                    except django.db.utils.IntegrityError:
-                        foreign_key_does_not_exist_msg += '    ' + key + '=' + v + ' does not exist'
+        if isinstance(data, dict):
+            post_data = [data]
+            insert_multiple_data = False
+        elif isinstance(data, (list, tuple)):
+            post_data = data
+            insert_multiple_data = True
         else:
-            try:
-                for key, value in data.items():
-                    setattr(exist_item, key, value)
-                if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
-                    setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
-                exist_item.save(using=using)
-                pks.append(exist_item.pk)
-            except Exception as e:
-                print(traceback.format_exc())
-                return cls.get_response_by_code(1, str(e))
-        res = cls.get_response_by_code(0, msg_append=foreign_key_does_not_exist_msg)
-        res[SETTINGS.DATA] = {SETTINGS.MODEL_PRIMARY_KEY: pks if len(pks) > 1 else pks[0]}
+            raise Exception('data should be dict, list or tuple')
+        list_many_to_many_relations = []
+        # check and process before insert data to database
+        for data in post_data:
+            many_to_many_relations = {}
+            del_keys = []
+            foreign_key_add = {}
+            foreign_key_del = []
+            field_names = cls.get_model_field_names()
+            primary_key_name = cls._meta.pk.attname
+            exist_item = None
+            for key, value in data.items():
+                if key in field_names:
+                    is_relationship_field = False
+                    field = getattr(cls, key)
+                    if hasattr(field, 'field'):
+                        is_relationship_field = True
+                        field = getattr(cls, key).field
+                    if not is_relationship_field and field.field_name == primary_key_name \
+                            or is_relationship_field and field.name == primary_key_name:
+                        if SETTINGS.MODEL_DELETE_FLAG is None:
+                            pass    # has checked by serializer
+                        else:
+                            exist_item = cls.objects.using(using).filter(pk=value).first()
+                            if exist_item is not None:
+                                if getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
+                                    setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 0)
+                                else:
+                                    return cls.get_response_by_code(4)
+                    if is_relationship_field:
+                        if field.many_to_one or field.one_to_one :
+                            if SETTINGS.MODEL_DELETE_FLAG:
+                                if isinstance(value, list):    # 目前只有多对多关系表会有 list 参数
+                                    values = value
+                                else:
+                                    values = [value]
+                                for _value in values:
+                                    if field.related_model.objects.using(using).filter(**{field.target_field.name: _value}).exists():
+                                        related_item = field.related_model.objects.using(using).get(**{field.target_field.name: _value})
+                                        if hasattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
+                                            if getattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
+                                                return cls.get_response_by_code(8, msg=(key, _value))
+                                    else:
+                                        return cls.get_response_by_code(9, msg=(key, _value))
+                            foreign_key = field.attname
+                            foreign_key_add[foreign_key] = data[key]
+                            foreign_key_del.append(key)
+                        elif field.many_to_many:
+                            many_to_many_relations[key] = copy.deepcopy(value)
+                            del_keys.append(key)
+                else:
+                    del_keys.append(key)
+            for key in del_keys:
+                del data[key]
+            data_before_foreign_key_process = copy.deepcopy(data)
+            for key in foreign_key_del:
+                del data[key]
+            for key, value in foreign_key_add.items():
+                data[key] = value
+            if SETTINGS.MODEL_DELETE_FLAG is not None and exist_item is None:
+                res = cls.check_unique_together(data_before_foreign_key_process, using=using)
+                if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
+                    return res
+            list_many_to_many_relations.append(many_to_many_relations)
+        # insert data to database
+        success_pks = []
+        fail_count = 0
+        for data, many_to_many_relations in zip(post_data, list_many_to_many_relations):
+            foreign_key_does_not_exist_msg = ''
+            if exist_item is None:
+                list_data = []    # to support batch insert by values of fields in request data in list
+                for key, _value in data.items():
+                    if isinstance(_value, list):
+                        values = _value
+                    else:
+                        values = [_value]
+                    if len(list_data) == 0:
+                        for v in values:
+                            list_data.append({key: v})
+                    else:
+                        last_loop_list_data = copy.deepcopy(list_data)
+                        first_loop = True
+                        for v in values:
+                            if first_loop:
+                                for d in list_data:
+                                    d[key] = v
+                                first_loop = False
+                            else:
+                                for d in last_loop_list_data:
+                                    _d = copy.deepcopy(d)
+                                    _d[key] = v
+                                    list_data.append(_d)
+                if len(list_data) == 0:
+                    if not insert_multiple_data:
+                        return cls.get_response_by_code(13)
+                    fail_count += 1
+                try:
+                    for pd in list_data:
+                        exist_item = cls(**pd)
+                        if user is not None:
+                            if SETTINGS.MODEL_CREATOR is not None and hasattr(exist_item, SETTINGS.MODEL_CREATOR):
+                                setattr(exist_item, SETTINGS.MODEL_CREATOR, user)
+                            if SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
+                                setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
+                        exist_item.save(using=using)
+                        success_pks.append(exist_item.pk)
+                except django.db.utils.IntegrityError as e:
+                    if hasattr(e, 'args'):
+                        if e.args[0] == 1048 or e.args[0].startswith('NOT NULL constraint failed: '):    # field cannot be None (很可能还有其他类型的错误, 待增加)
+                            if not insert_multiple_data:
+                                return cls.get_response_by_code(1, str(e))
+                            fail_count += 1
+                    data_ = {}
+                    for key, value in data.items():
+                        if isinstance(value, list):
+                            data_[key + '__in'] = value
+                        else:
+                            data_[key] = value
+                    exist_item = cls.objects.using(using).get(**data_)
+                    if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
+                        if not insert_multiple_data:
+                            return cls.get_response_by_code(1, str(e))
+                        fail_count += 1
+                    if SETTINGS.MODEL_DELETE_FLAG is not None and hasattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
+                        setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 1)
+                    if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
+                        setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
+                    exist_item.save(using=using)
+                    success_pks.append(exist_item.pk)
+                for key, value in many_to_many_relations.items():
+                    if isinstance(value, list):
+                        values = value
+                    else:
+                        values = [value]
+                    for v in values:
+                        try:
+                            getattr(exist_item, key).add(v)
+                        except django.db.utils.IntegrityError:
+                            foreign_key_does_not_exist_msg += '    ' + key + '=' + v + ' does not exist'
+            else:
+                try:
+                    for key, value in data.items():
+                        setattr(exist_item, key, value)
+                    if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
+                        setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
+                    exist_item.save(using=using)
+                    success_pks.append(exist_item.pk)
+                except Exception as e:
+                    print(traceback.format_exc())
+                    if not insert_multiple_data:
+                        return cls.get_response_by_code(1, str(e))
+                    fail_count += 1
+            if not insert_multiple_data:
+                res = cls.get_response_by_code(SETTINGS.SUCCESS_CODE, msg_append=foreign_key_does_not_exist_msg)
+                return res
+        res = cls.get_response_by_code()
+        res[SETTINGS.DATA] = {SETTINGS.MODEL_PRIMARY_KEY: success_pks if len(success_pks) > 1 else success_pks[0]}
+        res[SETTINGS.SUCCESS_COUNT] = len(success_pks)
         return res
 
     @classmethod
@@ -622,7 +668,7 @@ class BenchmarkModel(object):
         # "unique_together" should be define in config.py.
         # "unique_together" function (detect for unique constraint) is processed here.
         if SETTINGS.MODEL_DELETE_FLAG is not None:
-            update_data = model_to_dict(m)
+            update_data = cls.model_to_dict(m)
             update_data.update(data)
             res = cls.check_unique_together(data_before_foreign_key_process, pk=m.pk, using=using)
             if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
@@ -639,7 +685,7 @@ class BenchmarkModel(object):
         except Exception as e:
             print(traceback.format_exc())
             return cls.get_response_by_code(1, str(e))
-        return cls.get_response_by_code(0)
+        return cls.get_response_by_code()
 
     @classmethod
     def delete_related_models(cls, m=None, pk=None, delete_flag=True, user=None, modifier=None, delete_time=None,
@@ -657,15 +703,15 @@ class BenchmarkModel(object):
         else:
             now_delete_flag = True if getattr(m, SETTINGS.MODEL_DELETE_FLAG) != 0 else False
             if now_delete_flag == delete_flag:
-                return cls.get_response_by_code(0)
+                return cls.get_response_by_code()
         m_modifier = cls.model_get_modifier(m)
         # m_modify_time = cls.model_get_modify_time(m)
         if delete_flag is False:    # only restore the data with the same modifier and modify time (within 10 seconds)
             if m_modifier is None or (modifier is not None and modifier != m_modifier):
-                return cls.get_response_by_code(0)
+                return cls.get_response_by_code()
         if not cls.model_has_delete_flag():    # 警告: 关联的表如果有 delete flag, 也会被删除
             m.delete(using=using)
-            return cls.get_response_by_code(0)
+            return cls.get_response_by_code()
         else:
             if cls.model_has_modifier() and user is not None:
                 if delete_flag:
@@ -689,7 +735,7 @@ class BenchmarkModel(object):
                             res_data.append(res[SETTINGS.DATA])
             if len(res_data) > 0:
                 return cls.get_response_by_code(11, data=res_data)
-        return cls.get_response_by_code(0)
+        return cls.get_response_by_code()
 
     @classmethod
     def delete_model(cls, data, user=None, using='default'):
@@ -735,6 +781,6 @@ class BenchmarkModel(object):
                 res = cls.delete_related_models(pk=pk, delete_flag=delete_flag, user=user, using=using)
                 if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                     return res
-            return cls.get_response_by_code(0)
+            return cls.get_response_by_code()
         else:
             return cls.get_response_by_code(2)

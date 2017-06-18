@@ -3,7 +3,7 @@
 from django.http import JsonResponse, StreamingHttpResponse
 from rest_framework.views import APIView
 from rest_framework.serializers import ModelSerializer
-import copy, django, json, logging, rest_framework, re, sys
+import copy, django, json, math, logging, rest_framework, re, sys
 
 
 SETTINGS = getattr(django.conf.settings, 'BENCHMARK_SETTINGS', None)
@@ -70,8 +70,9 @@ class BenchmarkAPIView(APIView):
         cls.PostSerializer.Meta.fields = '__all__'
         cls.PutSerializer.Meta.model = cls.primary_model
         cls.PutSerializer.Meta.fields = '__all__'
-        if not hasattr(cls, 'access'):
-            cls.access = {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'}
+        cls.access = getattr(cls, SETTINGS.ACCESS, {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'})
+        for method in {'get', 'post', 'put', 'delete'} - set(cls.access.keys()):
+            cls.access[method] = 'all'
         cls.is_ready = True
 
     def __init__(self):
@@ -84,7 +85,6 @@ class BenchmarkAPIView(APIView):
         self.path = ''
         self.method = ''
         self.user = None
-        self.path = None
         self.select_related = None
         self.values = None
         self.values_white_list = True
@@ -117,7 +117,7 @@ class BenchmarkAPIView(APIView):
                             break
                     if not found:
                         return self.get_response_by_code(err_code, msg_append=key)
-        return self.get_response_by_code(0)
+        return self.get_response_by_code()
 
     # 提取请求 body 中的 data 或 json
     def get_request_data_json(self, request):
@@ -137,21 +137,6 @@ class BenchmarkAPIView(APIView):
         if len(uri_params) == 1:
             return {SETTINGS.MODEL_PRIMARY_KEY: uri_params[0]}
         raise Exception('too many uri params')
-
-    # @classmethod
-    # def get_model_field_names(cls, model=None):
-    #     if model is None:
-    #         model = cls.primary_model
-    #     field_names = []
-    #     for field in model._meta.get_fields():
-    #         if SETTINGS.MODEL_DELETE_FLAG is None:
-    #             field_names.append(field.name)
-    #         elif field.name not in (
-    #             SETTINGS.MODEL_CREATE_TIME, SETTINGS.MODEL_CREATOR, SETTINGS.MODEL_DELETE_FLAG,
-    #             SETTINGS.MODEL_MODIFIER, SETTINGS.MODEL_MODIFY_TIME
-    #         ):
-    #                 field_names.append(field.name)
-    #     return field_names
 
     # when using delete flag, you cannot define "unique_together" in models.
     # "unique_together" should be define in config.py.
@@ -181,7 +166,7 @@ class BenchmarkAPIView(APIView):
                             for item in query_set:
                                 if pk != item.pk:
                                     return cls.get_response_by_code(5)
-        return cls.get_response_by_code(0)
+        return cls.get_response_by_code()
 
     @classmethod
     def check_primary_model(cls, function_name):
@@ -196,37 +181,104 @@ class BenchmarkAPIView(APIView):
         res = self.primary_model.get_model(params=params, select_related=self.select_related, values=self.values,
                                            values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
                                            )
-        # if type(data) == dict and SETTINGS.CODE in data.keys() and SETTINGS.MSG in data.keys() and \
-        #         len(data) == 2 and data[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
-        #     return data
-        # res = self.get_response_by_code(SETTINGS.SUCCESS_CODE)
-        # res[SETTINGS.DATA] = data
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_TYPE == 2:
+            # get one
+            if 'pk' in self.uri_params.keys():
+                if len(res[SETTINGS.DATA]) == 0:
+                    res[SETTINGS.DATA] = None
+                else:
+                    res[SETTINGS.DATA] = res[SETTINGS.DATA][0]
+            # get many in pages
+            elif SETTINGS.PAGE in params.keys():
+                try:
+                    page = int(params[SETTINGS.PAGE])
+                except:
+                    page = 1
+                count = len(res[SETTINGS.DATA])
+                try:
+                    limit = int(params[SETTINGS.LIMIT])
+                except:
+                    limit = 0
+                if limit < 0:
+                    limit = 0
+                if limit == 0:
+                    page_count = 0 if count == 0 else 1
+                else:
+                    page_count = math.ceil(count / limit)
+                if 1 <= page <= page_count:
+                    if limit == 0:
+                        result = res[SETTINGS.DATA]
+                    else:
+                        result = res[SETTINGS.DATA][(page - 1) * limit: page * limit]
+                else:
+                    result = None
+                if page < 1:
+                    page = 0
+                elif page > page_count:
+                    page = page_count + 1
+                basic_url = 'http://' + self.host + self.path
+                previous_param_url = None
+                next_param_url = None
+                if page <= 1:
+                    previous_url = None
+                else:
+                    for key, value in self.params.items():
+                        if key == 'page':
+                            value = str(page-1)
+                        if previous_param_url is None:
+                            previous_param_url = '?' + key + '=' + value
+                        else:
+                            previous_param_url += '&' + key + '=' + value
+                    previous_url = basic_url + previous_param_url
+                if page >= page_count:
+                    next_url = None
+                else:
+                    for key, value in self.params.items():
+                        if key == 'page':
+                            value = str(page+1)
+                        if next_param_url is None:
+                            next_param_url = '?' + key + '=' + value
+                        else:
+                            next_param_url += '&' + key + '=' + value
+                    next_url = basic_url + next_param_url
+                res[SETTINGS.DATA] = {SETTINGS.RESULT: result, SETTINGS.COUNT: count,
+                                      SETTINGS.NEXT: next_url, SETTINGS.PREVIOUS: previous_url}
+            # get many not in pages
+            else:
+                res[SETTINGS.DATA] = {SETTINGS.RESULT: res[SETTINGS.DATA], SETTINGS.COUNT: len(res[SETTINGS.DATA])}
         return res
 
     def serializer_check(self, data):
-        if self.method == 'post':
-            serializer = self.PostSerializer(data=data)
-        elif self.method == 'put':
-            serializer = self.PutSerializer(data=data)
-            for field_value in serializer.fields.values():
-                field_value.required = False
-        try:
-            serializer.is_valid(raise_exception=True)
-        except rest_framework.exceptions.ValidationError as e:
-            if SETTINGS.MODEL_DELETE_FLAG is None:
-                exception_detail = e.detail
-            else:
-                exception_detail = {}
-                for key, errors in e.detail.items():
-                    for error in errors:
-                        if re.match(r'[\w\d_]+ with this [\w\d_ ]+ id already exists.', error):
-                            errors.remove(error)
-                    if len(errors) != 0:
-                        exception_detail[key] = errors
-            if len(exception_detail) > 0:
-                return self.get_response_by_code(20, data=exception_detail)
-        except Exception as e:
-            return self.get_response_by_code(1, msg=str(e))
+        if isinstance(data, dict):
+            list_data = [data]
+        elif isinstance(data, (list, tuple)):
+            list_data = data
+        else:
+            raise Exception('data should be dict, list or tuple')
+        for data in list_data:
+            if self.method == 'post':
+                serializer = self.PostSerializer(data=data)
+            elif self.method == 'put':
+                serializer = self.PutSerializer(data=data)
+                for field_value in serializer.fields.values():
+                    field_value.required = False
+            try:
+                serializer.is_valid(raise_exception=True)
+            except rest_framework.exceptions.ValidationError as e:
+                if SETTINGS.MODEL_DELETE_FLAG is None:
+                    exception_detail = e.detail
+                else:
+                    exception_detail = {}
+                    for key, errors in e.detail.items():
+                        for error in errors:
+                            if re.match(r'[\w\d_]+ with this [\w\d_ ]+ id already exists.', error):
+                                errors.remove(error)
+                        if len(errors) != 0:
+                            exception_detail[key] = errors
+                if len(exception_detail) > 0:
+                    return self.get_response_by_code(20, data=exception_detail)
+            except Exception as e:
+                return self.get_response_by_code(1, msg=str(e))
         return None
 
     # post 请求对应的 model 操作
@@ -234,12 +286,25 @@ class BenchmarkAPIView(APIView):
         self.check_primary_model('post_model')
         post_data = copy.deepcopy(self.data)
         if data:
-            post_data.update(data)
+            if isinstance(post_data, dict):
+                post_data.update(data)
+            elif isinstance(post_data, (list, tuple)):
+                for pd in post_data:
+                    pd.update(data)
+            else:
+                raise Exception('data should be dict, list or tuple')
         res = self.serializer_check(post_data)
         if res is not None:
             return res
-        if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
-            return self.get_response_by_code(12)
+        if isinstance(post_data, dict):
+            if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
+                return self.get_response_by_code(12)
+        elif isinstance(post_data, (list, tuple)):
+            for pd in post_data:
+                if SETTINGS.MODEL_PRIMARY_KEY in pd.keys():
+                    return self.get_response_by_code(12)
+        else:
+            raise Exception('data should be dict, list or tuple')
         return self.primary_model.post_model(post_data, user=self.user.get_username(), using=self.using)
 
     def get_uri_params_data(self, data=None):
@@ -270,14 +335,14 @@ class BenchmarkAPIView(APIView):
             return self.get_response_by_code()
         if self.access[self.method] is None:    # no one can access
             return self.get_response_by_code(3)
-        if self.user.is_anonymous:
+        if not self.user.is_authenticated():
             return self.get_response_by_code(21)
         if self.access[self.method] == 'user':    # login user can access
             return self.get_response_by_code()
         if self.access[self.method] == 'staff':    # staff or admin can access
-            return self.get_response_by_code() if self.user.is_staff or self.user.is_admin else self.get_response_by_code(22)
+            return self.get_response_by_code() if self.user.is_staff or self.user.is_superuser else self.get_response_by_code(22)
         if self.access[self.method] == 'admin':    # admin can access
-            return self.get_response_by_code() if self.user.is_admin else self.get_response_by_code(22)
+            return self.get_response_by_code() if self.user.is_superuser else self.get_response_by_code(22)
         if self.access[self.method] == 'creator':    # creator or admin can access put or delete method
             if SETTINGS.MODEL_CREATOR not in self.primary_model._meta.get_fields():
                 raise Exception('primary model %s has no field %s' % (self.primary_model.__name__, SETTINGS.MODEL_CREATOR))
@@ -305,14 +370,8 @@ class BenchmarkAPIView(APIView):
     # 处理各种请求的入口，解析各字段并进行处理
     def begin(self, request, uri_params={}):
         self.user = request.user
+        self.host = request.get_host()
         self.path = request.path
-        need_login = getattr(self.__class__, 'need_login', None)
-        if need_login is None:
-            if SETTINGS.API_NEED_LOGIN and isinstance(self.user, django.contrib.auth.models.AnonymousUser) and \
-                            self.path not in SETTINGS.DO_NOT_NEED_LOGIN_URIS:
-                return self.get_response_by_code(101)
-        elif need_login and isinstance(self.user, django.contrib.auth.models.AnonymousUser):
-            return self.get_response_by_code(101)
         self.method = request.method.lower()
         if self.method in self.view_not_support_methods:
             return self.get_response_by_code(3)
@@ -355,16 +414,33 @@ class BenchmarkAPIView(APIView):
         self.uri_params = uri_params
         if self.method in ('post', 'put', 'delete'):
             request_data = copy.deepcopy(request.data)
-            self.data = {}
-            try:
-                for key, value in request_data.lists():
-                    if len(value) == 1:
-                        self.data[key] = value[0]
-                    else:
+            if isinstance(request_data, dict):
+                self.data = {}
+                try:
+                    for key, value in request_data.lists():
+                        if len(value) == 1:
+                            self.data[key] = value[0]
+                        else:
+                            self.data[key] = value
+                except:
+                    for key, value in request_data.items():
                         self.data[key] = value
-            except:
-                for key, value in request_data.items():
-                    self.data[key] = value
+            elif isinstance(request_data, (list, tuple)):
+                self.data = []
+                for one_request_data in request_data:
+                    one_data = {}
+                    try:
+                        for key, value in one_request_data.lists():
+                            if len(value) == 1:
+                                one_data[key] = value[0]
+                            else:
+                                one_data[key] = value
+                    except:
+                        for key, value in one_request_data.items():
+                            one_data[key] = value
+                    self.data.append(one_data)
+            else:
+                raise Exception('data should be dict, list or tuple')
         res = self.check_request_param_data()
         if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
             return res

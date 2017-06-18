@@ -9,11 +9,31 @@ import copy
 
 
 # The http response json data field names, you can modify them to fit in with your web sit.
-CODE = 'code'
-MSG = 'msg'
-DATA = 'data'
-SUCCESS_CODE = 0
+CODE = 'code'      # the error code field name
+SUCCESS_CODE = 0   # the only one success code value
 CODE_OFFSET = 0    # the offset of error codes defined by this framework
+MSG = 'msg'        # the error message field name
+DATA = 'data'      # the data field name
+SUCCESS_COUNT = 'success_count'    # insert success count field name when data of http post request is a list
+
+# The DATA_TYPE of the DATA field for http get response.
+# If DATA_TYPE is 1: DATA a list including every model instances of the filter result for the models in dict format.
+# If DATA_TYPE is 2:
+#     1. When the primary key of the primary_model is in the request uri parameter, DATA is a dict for the only one
+#        filter result for the models. If the data with this primary key doesn't exist, DATA is null.
+#     2. In the other situation, DATA a dict which has a RESULT field. The value of the RESULT field is a list including
+#        every model instances of the filter result for the models in dict format, same as when DATA_TYPE is 1.
+#        Additionally, the DATA include COUNT, NEXT, PREVIOUS fields. See the comments of these 3 fields for more detail
+#        information.
+DATA_TYPE = 2
+RESULT = 'result'
+COUNT = 'count'    # the count of items in result list
+# If OFFSET and PAGE are in request parameters, the value of NEXT is the next page url.
+# Otherwise or no next page, the value is null.
+NEXT = 'next'
+# If OFFSET and PAGE are in request parameters, the value of PREVIOUS is the previous page url.
+# Otherwise or no previous page, the value is null.
+PREVIOUS = 'previous'
 
 # The http response json format
 # The error codes which smaller than 200 before added by CODE_OFFSET is defined by the framework.
@@ -35,7 +55,7 @@ DICT_RESPONSE_BY_CODE = {
     '10': {MSG: 'update failed: the value of the request data %s cannot be list'},
     '11': {MSG: 'deleted, but some foreign key has already deleted by delete flag'},    # only happend when MODEL_DELETE_FLAG is not None
     '12': {MSG: 'insert failed: the post request cannot contains "pk" parameter'},
-    '13': {MSG: 'insert failed: the post request should has some legal request data'},
+    '13': {MSG: 'batch insert by values of fields in request data in list failed: the post request should has some legal request data'},
     '14': {MSG: 'invalid select_related field: '},
     '15': {MSG: 'request parameter does not exist: '},
     '16': {MSG: 'request data in body does not exist: '},
@@ -47,16 +67,16 @@ DICT_RESPONSE_BY_CODE = {
     '22': {MSG: 'user haven\'t the right to access this api'},
     '23': {MSG: 'user are not the creator of the pk: '},
     '100': {MSG: 'login failed'},
-    '101': {MSG: 'anonymous user cannot access this api, should login first'},
 }
 
-for code, res in DICT_RESPONSE_BY_CODE.items():
-    if code < 200:
-        res[CODE] = int(code) + CODE_OFFSET
+for _code, _res in DICT_RESPONSE_BY_CODE.items():
+    if int(_code) < 200:
+        _res[CODE] = int(_code) + CODE_OFFSET
+
 
 def GET_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None, msg_append=None):
     if code == SUCCESS_CODE:
-        res = copy.deepcopy(DICT_RESPONSE_BY_CODE['0'])
+        res = copy.deepcopy(DICT_RESPONSE_BY_CODE[str(SUCCESS_CODE)])
     else:
         res = copy.deepcopy(DICT_RESPONSE_BY_CODE[str(code)])
     if msg:
@@ -122,7 +142,9 @@ LIMIT = 'limit'
 # The keyword of the page number of http get response data.
 # It usually used with LIMIT keyword, for limit the number of the search result data.
 # If OFFSET and PAGE keywords are both appear in the parameters, omit the OFFSET.
-# The range of PAGE value is between 1 and ⌈COUNT/PAGE⌉. If the value of PAGE is not correct, set it to 1.
+# The range of PAGE value is between 1 and ⌈COUNT/PAGE⌉.
+# If the value of page is bigger than ⌈COUNT/PAGE⌉, the RESULT set to null.
+# If the value of PAGE is not correct number, set it to 1.
 PAGE = 'page'
 
 # The keyword of the number of data in http get response.
@@ -158,11 +180,11 @@ USING = 'using'
 # None: the api does not support the http method of the api.
 # 'all': everyone, including without login, can access the http method of the api.
 # 'user': every login users can access the http method of the api.
-# 'staff': every staffs or admin can access the http method of the api.
-# 'admin': every admins can access the http method of the api.
-# 'creator': every creators and admins can access the http method (put or delete) of the api.
+# 'staff': every staffs or superusers can access the http method of the api.
+# 'superuser': every superusers can access the http method of the api.
+# 'creator': every creators and superusers can access the http method (put or delete) of the api.
 #            the creator is defined in the primary_model and set to request.user.username in post method.
-#            so the post method of the same api should be 'user', 'staff' or 'admin'.
+#            so the post method of the same api should be 'user', 'staff' or 'superuser'.
 #            and the variable name of the creator in all models is defined in MODEL_CREATOR.
 # each undefined access of method
 ACCESS = 'access'
@@ -225,14 +247,8 @@ MODEL_JSON_FIELD_NAMES = (
     # 'employee_info',
 )
 
-# Whether the APIs of the site should be used by login
-API_NEED_LOGIN = False
-
-# If API_NEED_LOGIN is True, the django anonymous users can request these uris
-DO_NOT_NEED_LOGIN_URIS = (
-    # # For example:
-    # '/company',
-)
+# The configuration of whether omit un-editable fields from models in the http get response. The default value is False.
+OMIT_UN_EDITABLE_FIELDS = False
 '''
 
 if __name__ == '__main__':
