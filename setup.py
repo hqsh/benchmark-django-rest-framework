@@ -6,7 +6,7 @@ import textwrap
 
 setup(
     name='benchmark-django-rest-framework',
-    version='0.1.0',
+    version='1.0.0',
     url='https://github.com/hqsh/benchmark-django-rest-framework',
     author='Huang Qiangsheng',
     author_email='hqsh@live.cn',
@@ -31,6 +31,6 @@ setup(
     ],
     packages=('benchmark_django_rest_framework', ),
     py_modules=('benchmark-django-rest-framework', ),
-    install_requires=['django>=1.10.7',
-                      'djangorestframework>=3.5.0']
+    install_requires=['django>=1.10.0',
+                      'djangorestframework>=3.6.0']
 )
