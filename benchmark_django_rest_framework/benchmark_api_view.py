@@ -181,7 +181,7 @@ class BenchmarkAPIView(APIView):
         res = self.primary_model.get_model(params=params, select_related=self.select_related, values=self.values,
                                            values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
                                            )
-        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_TYPE == 2:
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_STYLE == 2:
             # get one
             if 'pk' in self.uri_params.keys():
                 if len(res[SETTINGS.DATA]) == 0:

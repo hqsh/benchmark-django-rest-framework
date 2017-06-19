@@ -8,7 +8,7 @@ from django.http import JsonResponse
 import copy
 
 
-# The http response json data field names, you can modify them to fit in with your web sit.
+# The http response json data field names, you can modify them to fit in with your web site.
 CODE = 'code'      # the error code field name
 SUCCESS_CODE = 0   # the only one success code value
 CODE_OFFSET = 0    # the offset of error codes defined by this framework
@@ -16,16 +16,16 @@ MSG = 'msg'        # the error message field name
 DATA = 'data'      # the data field name
 SUCCESS_COUNT = 'success_count'    # insert success count field name when data of http post request is a list
 
-# The DATA_TYPE of the DATA field for http get response.
-# If DATA_TYPE is 1: DATA a list including every model instances of the filter result for the models in dict format.
-# If DATA_TYPE is 2:
+# DATA_STYLE is the style of DATA field for http get response.
+# If DATA_STYLE is 1: DATA a list including every model instances of the filter result for the models in dict format.
+# If DATA_STYLE is 2:
 #     1. When the primary key of the primary_model is in the request uri parameter, DATA is a dict for the only one
 #        filter result for the models. If the data with this primary key doesn't exist, DATA is null.
 #     2. In the other situation, DATA a dict which has a RESULT field. The value of the RESULT field is a list including
-#        every model instances of the filter result for the models in dict format, same as when DATA_TYPE is 1.
+#        every model instances of the filter result for the models in dict format, same as when DATA_STYLE is 1.
 #        Additionally, the DATA include COUNT, NEXT, PREVIOUS fields. See the comments of these 3 fields for more detail
 #        information.
-DATA_TYPE = 2
+DATA_STYLE = 2
 RESULT = 'result'
 COUNT = 'count'    # the count of items in result list
 # If OFFSET and PAGE are in request parameters, the value of NEXT is the next page url.
@@ -66,6 +66,7 @@ DICT_RESPONSE_BY_CODE = {
     '21': {MSG: 'anonymous user cannot access this api, should login first'},
     '22': {MSG: 'user haven\'t the right to access this api'},
     '23': {MSG: 'user are not the creator of the pk: '},
+    '24': {MSG: 'the name of request parameter is not correct: '},
     '100': {MSG: 'login failed'},
 }
 
@@ -146,9 +147,6 @@ LIMIT = 'limit'
 # If the value of page is bigger than ⌈COUNT/PAGE⌉, the RESULT set to null.
 # If the value of PAGE is not correct number, set it to 1.
 PAGE = 'page'
-
-# The keyword of the number of data in http get response.
-COUNT = 'count'
 
 # The keyword of http get requests for the data order.
 ORDER_BY = 'order_by'

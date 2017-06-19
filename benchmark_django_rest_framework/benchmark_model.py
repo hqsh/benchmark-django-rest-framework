@@ -2,6 +2,7 @@
 
 from collections import OrderedDict
 from django.db.models import Q
+from django.db.models.sql.constants import QUERY_TERMS
 from itertools import chain
 import django, json, traceback
 import copy, datetime, sys
@@ -148,7 +149,8 @@ class BenchmarkModel(object):
     @staticmethod
     def model_to_dict(instance, fields=None, exclude=None):
         """
-        copy from django.forms.models.model_to_dict, but also return un-editable fields.
+        This function is modified from django.forms.models.model_to_dict.
+        It can also return un-editable fields when SETTINGS.OMIT_UN_EDITABLE_FIELDS = False.
         """
         opts = instance._meta
         data = {}
@@ -199,8 +201,55 @@ class BenchmarkModel(object):
             list_data.append(dict_m)
         return query_set
 
+    # for http post / put method, get model field names
+    @staticmethod
+    def get_model_field_names(model):
+        field_names = []
+        for field in model._meta.get_fields():
+            if SETTINGS.MODEL_DELETE_FLAG is None or field.name != SETTINGS.MODEL_DELETE_FLAG:
+                field_names.append(field.name)
+        return field_names
+
+    # keywords of http get request in benchmark_settings
+    setting_keywords = {SETTINGS.SELECT_RELATED, SETTINGS.VALUES, SETTINGS.OFFSET, SETTINGS.LIMIT, SETTINGS.PAGE,
+                        SETTINGS.COUNT, SETTINGS.ORDER_BY, SETTINGS.Q, SETTINGS.Q_OR, SETTINGS.Q_AND}
+
+    @classmethod
+    def validate_key(cls, model, key, is_first_model=True):
+        if is_first_model and key in cls.setting_keywords:
+            return True
+        field_names = cls.get_model_field_names(model)
+        field_names.append('pk')
+        if key in field_names:
+            return True
+        if '__' not in key:
+            return False
+        split_keys = key.split('__')
+        if len(split_keys) == 2 and split_keys[0] in field_names and split_keys[1] in QUERY_TERMS:
+            return True
+        if split_keys[0] in field_names:
+            field = getattr(model, split_keys[0], None)
+            if field is None:
+                return False
+            if hasattr(field, 'field'):
+                field = field.field
+            if getattr(field, 'is_relation', False):
+                return cls.validate_key(field.related_model, '__'.join(split_keys[1:]), False)
+        return False
+
+    # for http get method, get model field names and keywords, and then delete error keys in params
+    @classmethod
+    def check_params(cls, params):
+        keys = tuple(params.keys())
+        for key in keys:
+            if not cls.validate_key(cls, key):
+                return cls.get_response_by_code(24, msg_append=key)
+
     @classmethod
     def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None, using='default'):
+        res = cls.check_params(params)
+        if res is not None:
+            return res
         relates = {}
         relates_keys = []    # relates, 为避免重复的统计进去
         level_relates = []
@@ -395,21 +444,6 @@ class BenchmarkModel(object):
             return res
         return data
 
-    @classmethod
-    def get_model_field_names(cls, model=None):
-        if model is None:
-            model = cls
-        field_names = []
-        for field in model._meta.get_fields():
-            if SETTINGS.MODEL_DELETE_FLAG is None:
-                field_names.append(field.name)
-            elif field.name not in (
-                SETTINGS.MODEL_CREATE_TIME, SETTINGS.MODEL_CREATOR, SETTINGS.MODEL_DELETE_FLAG,
-                SETTINGS.MODEL_MODIFIER, SETTINGS.MODEL_MODIFY_TIME
-            ):
-                field_names.append(field.name)
-        return field_names
-
     # when using delete flag, you cannot define "unique_together" in models.
     # "unique_together" should be define in benchmark_settings.py.
     # "unique_together" function (detect for unique constraint) is processed here.
@@ -473,7 +507,7 @@ class BenchmarkModel(object):
             del_keys = []
             foreign_key_add = {}
             foreign_key_del = []
-            field_names = cls.get_model_field_names()
+            field_names = cls.get_model_field_names(cls)
             primary_key_name = cls._meta.pk.attname
             exist_item = None
             for key, value in data.items():
@@ -532,8 +566,8 @@ class BenchmarkModel(object):
         # insert data to database
         success_pks = []
         fail_count = 0
+        foreign_key_does_not_exist_msg = ''
         for data, many_to_many_relations in zip(post_data, list_many_to_many_relations):
-            foreign_key_does_not_exist_msg = ''
             if exist_item is None:
                 list_data = []    # to support batch insert by values of fields in request data in list
                 for key, _value in data.items():
@@ -639,7 +673,7 @@ class BenchmarkModel(object):
         del_keys = []
         foreign_key_add = {}
         foreign_key_del = []
-        field_names = cls.get_model_field_names()
+        field_names = cls.get_model_field_names(cls)
         for key in data.keys():
             if key in field_names:
                 field = getattr(cls, key)
