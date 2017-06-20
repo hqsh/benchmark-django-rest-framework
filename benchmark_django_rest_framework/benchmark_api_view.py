@@ -178,75 +178,9 @@ class BenchmarkAPIView(APIView):
         self.check_primary_model('get_model')
         params = self.params
         params.update(self.uri_params)
-        res = self.primary_model.get_model(params=params, select_related=self.select_related, values=self.values,
+        return self.primary_model.get_model(params=params, select_related=self.select_related, values=self.values,
                                            values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
                                            )
-        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_STYLE == 2:
-            # get one
-            if 'pk' in self.uri_params.keys():
-                if len(res[SETTINGS.DATA]) == 0:
-                    res[SETTINGS.DATA] = None
-                else:
-                    res[SETTINGS.DATA] = res[SETTINGS.DATA][0]
-            # get many in pages
-            elif SETTINGS.PAGE in params.keys():
-                try:
-                    page = int(params[SETTINGS.PAGE])
-                except:
-                    page = 1
-                count = len(res[SETTINGS.DATA])
-                try:
-                    limit = int(params[SETTINGS.LIMIT])
-                except:
-                    limit = 0
-                if limit < 0:
-                    limit = 0
-                if limit == 0:
-                    page_count = 0 if count == 0 else 1
-                else:
-                    page_count = math.ceil(count / limit)
-                if 1 <= page <= page_count:
-                    if limit == 0:
-                        result = res[SETTINGS.DATA]
-                    else:
-                        result = res[SETTINGS.DATA][(page - 1) * limit: page * limit]
-                else:
-                    result = None
-                if page < 1:
-                    page = 0
-                elif page > page_count:
-                    page = page_count + 1
-                basic_url = 'http://' + self.host + self.path
-                previous_param_url = None
-                next_param_url = None
-                if page <= 1:
-                    previous_url = None
-                else:
-                    for key, value in self.params.items():
-                        if key == 'page':
-                            value = str(page-1)
-                        if previous_param_url is None:
-                            previous_param_url = '?' + key + '=' + value
-                        else:
-                            previous_param_url += '&' + key + '=' + value
-                    previous_url = basic_url + previous_param_url
-                if page >= page_count:
-                    next_url = None
-                else:
-                    for key, value in self.params.items():
-                        if key == 'page':
-                            value = str(page+1)
-                        if next_param_url is None:
-                            next_param_url = '?' + key + '=' + value
-                        else:
-                            next_param_url += '&' + key + '=' + value
-                    next_url = basic_url + next_param_url
-                res[SETTINGS.DATA] = {SETTINGS.RESULT: result, SETTINGS.COUNT: count,
-                                      SETTINGS.NEXT: next_url, SETTINGS.PREVIOUS: previous_url}
-            # get many not in pages
-            else:
-                res[SETTINGS.DATA] = {SETTINGS.RESULT: res[SETTINGS.DATA], SETTINGS.COUNT: len(res[SETTINGS.DATA])}
-        return res
 
     def serializer_check(self, data):
         if isinstance(data, dict):
@@ -367,6 +301,71 @@ class BenchmarkAPIView(APIView):
                 return self.get_response_by_code(23)
             return self.get_response_by_code()
 
+    def java_to_python_keys(self):
+        if SETTINGS.TRANSFER_KEYS:
+            for param_data in (self.params, self.data):
+                keys = list(param_data.keys())
+                for key in keys:
+                    new_key = ''
+                    for alphabet in key:
+                        if alphabet.isupper():
+                            new_key = new_key + '_' + alphabet.lower()
+                        else:
+                            new_key = new_key + alphabet
+                    param_data[new_key] = param_data.pop(key)
+
+    @staticmethod
+    def python_to_java_key(key):
+        new_key = ''
+        to_upper = False
+        for i, alphabet in enumerate(key):
+            if to_upper:
+                if alphabet.islower():
+                    new_key = new_key + alphabet.upper()
+                else:
+                    new_key = new_key + alphabet
+                to_upper = False
+            elif alphabet == '_':
+                if i+1 < len(key):
+                    if key[i+1] == '_':
+                        new_key = new_key + alphabet
+                        continue
+                if i-1 > 0:
+                    if key[i-1] == '_':
+                        new_key = new_key + alphabet
+                        continue
+                to_upper = True
+            else:
+                new_key = new_key + alphabet
+        return new_key
+
+    def python_to_java_keys(self, res):
+        if SETTINGS.TRANSFER_KEYS:
+            if isinstance(res, dict):
+                keys = list(res.keys())
+                for key in keys:
+                    if isinstance(res[key], (dict, list)):
+                        self.python_to_java_keys(res[key])
+                    new_key = self.python_to_java_key(key)
+                    if key != new_key:
+                        res[new_key] = res.pop(key)
+            elif isinstance(res, list):
+                for item in res:
+                    self.python_to_java_keys(item)
+
+    def json_to_string_keys(self):
+        if isinstance(self.data, dict):
+            post_data = [self.data]
+        elif isinstance(self.data, (list, tuple)):
+            post_data = self.data
+        else:
+            raise Exception('data should be dict, list or tuple')
+        for data in post_data:
+            keys = list(data.keys())
+            for key in keys:
+                if key in SETTINGS.MODEL_JSON_FIELD_NAMES:
+                    data[key] = json.dumps(data[key])
+
     # 处理各种请求的入口，解析各字段并进行处理
     def begin(self, request, uri_params={}):
         self.user = request.user
@@ -450,22 +449,96 @@ class BenchmarkAPIView(APIView):
                 pk = self.uri_params['pk']
             elif 'pk' in self.data:
                 pk = self.data['pk']
+        if SETTINGS.TRANSFER_KEYS:
+            self.java_to_python_keys()
+        self.json_to_string_keys()
         return self.check_access(pk=pk)
 
     # 处理各种类型的返回
-    @staticmethod
-    def process_response(res):
+    def process_response(self, res):
         if isinstance(res, dict):    # dict 转 json 返回
+            if SETTINGS.TRANSFER_KEYS:
+                self.python_to_java_keys(res)
             return JsonResponse(res, json_dumps_params={"indent": 2})
         if isinstance(res, StreamingHttpResponse):    # 流文件返回
             return res
         raise Exception('unknown response type: %s' % type(res))
+
+    # 处理分页
+    def pagination(self, res):
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_STYLE == 2:
+            # get one
+            if 'pk' in self.uri_params.keys():
+                if len(res[SETTINGS.DATA]) == 0:
+                    res[SETTINGS.DATA] = None
+                else:
+                    res[SETTINGS.DATA] = res[SETTINGS.DATA][0]
+            # get many in pages
+            elif SETTINGS.PAGE in self.params.keys():
+                try:
+                    page = int(self.params[SETTINGS.PAGE])
+                except:
+                    page = 1
+                count = len(res[SETTINGS.DATA])
+                try:
+                    limit = int(self.params[SETTINGS.LIMIT])
+                except:
+                    limit = 0
+                if limit < 0:
+                    limit = 0
+                if limit == 0:
+                    page_count = 0 if count == 0 else 1
+                else:
+                    page_count = math.ceil(count / limit)
+                if 1 <= page <= page_count:
+                    if limit == 0:
+                        result = res[SETTINGS.DATA]
+                    else:
+                        result = res[SETTINGS.DATA][(page - 1) * limit: page * limit]
+                else:
+                    result = None
+                if page < 1:
+                    page = 0
+                elif page > page_count:
+                    page = page_count + 1
+                basic_url = 'http://' + self.host + self.path
+                previous_param_url = None
+                next_param_url = None
+                if page <= 1:
+                    previous_url = None
+                else:
+                    for key, value in self.params.items():
+                        if key == 'page':
+                            value = str(page-1)
+                        if previous_param_url is None:
+                            previous_param_url = '?' + key + '=' + value
+                        else:
+                            previous_param_url += '&' + key + '=' + value
+                    previous_url = basic_url + previous_param_url
+                if page >= page_count:
+                    next_url = None
+                else:
+                    for key, value in self.params.items():
+                        if key == 'page':
+                            value = str(page+1)
+                        if next_param_url is None:
+                            next_param_url = '?' + key + '=' + value
+                        else:
+                            next_param_url += '&' + key + '=' + value
+                    next_url = basic_url + next_param_url
+                res[SETTINGS.DATA] = {SETTINGS.RESULT: result, SETTINGS.COUNT: count,
+                                      SETTINGS.NEXT: next_url, SETTINGS.PREVIOUS: previous_url}
+            # get many not in pages
+            else:
+                res[SETTINGS.DATA] = {SETTINGS.RESULT: res[SETTINGS.DATA], SETTINGS.COUNT: len(res[SETTINGS.DATA])}
 
     # 处理 get 请求
     def get(self, request, **uri_params):
         res = self.begin(request, uri_params)
         if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             res = self.get_model()
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
+            self.pagination(res)
         return self.process_response(res)
 
     # 处理 post 请求

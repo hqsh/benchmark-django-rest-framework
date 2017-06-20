@@ -247,6 +247,13 @@ MODEL_JSON_FIELD_NAMES = (
 
 # The configuration of whether omit un-editable fields from models in the http get response. The default value is False.
 OMIT_UN_EDITABLE_FIELDS = False
+
+# The configuration of whether to transform keys of the params or data of the request or response
+# between the style of python and java.
+# For example, transform employeeName to employee_name after BenchmarkApiView receive request.
+# Conversely, transform employee_name to employeeName before BenchmarkApiView return response.
+TRANSFER_KEYS = True
+
 '''
 
 if __name__ == '__main__':

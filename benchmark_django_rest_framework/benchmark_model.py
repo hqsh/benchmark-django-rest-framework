@@ -214,6 +214,7 @@ class BenchmarkModel(object):
     setting_keywords = {SETTINGS.SELECT_RELATED, SETTINGS.VALUES, SETTINGS.OFFSET, SETTINGS.LIMIT, SETTINGS.PAGE,
                         SETTINGS.COUNT, SETTINGS.ORDER_BY, SETTINGS.Q, SETTINGS.Q_OR, SETTINGS.Q_AND}
 
+    # for http get method, get model field names and keywords, and then delete error keys in params
     @classmethod
     def validate_key(cls, model, key, is_first_model=True):
         if is_first_model and key in cls.setting_keywords:
