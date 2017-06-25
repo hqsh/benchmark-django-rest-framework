@@ -4,8 +4,12 @@ from collections import OrderedDict
 from django.db.models import Q
 from django.db.models.sql.constants import QUERY_TERMS
 from itertools import chain
-import django, json, traceback
-import copy, datetime, sys
+import copy
+import datetime
+import django
+import json
+import sys
+import traceback
 
 
 SETTINGS = getattr(django.conf.settings, 'BENCHMARK_SETTINGS', None)
@@ -101,9 +105,9 @@ class BenchmarkModel(object):
                     model_filter.pop(SETTINGS.MODEL_DELETE_FLAG)
                     query_set = cls.objects.using(using).filter(**model_filter)
                 except Exception as e:
-                    return cls.get_response_by_code(1, str(e))
+                    return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
             except Exception as e:
-                return cls.get_response_by_code(1, str(e))
+                return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
         else:
             query_set = query_set.using(using).filter(**model_filter)
         if Qs is not None:
@@ -210,14 +214,10 @@ class BenchmarkModel(object):
                 field_names.append(field.name)
         return field_names
 
-    # keywords of http get request in benchmark_settings
-    setting_keywords = {SETTINGS.SELECT_RELATED, SETTINGS.VALUES, SETTINGS.OFFSET, SETTINGS.LIMIT, SETTINGS.PAGE,
-                        SETTINGS.COUNT, SETTINGS.ORDER_BY, SETTINGS.Q, SETTINGS.Q_OR, SETTINGS.Q_AND}
-
     # for http get method, get model field names and keywords, and then delete error keys in params
     @classmethod
     def validate_key(cls, model, key, is_first_model=True):
-        if is_first_model and key in cls.setting_keywords:
+        if is_first_model and key in SETTINGS.KEYWORDS:
             return True
         field_names = cls.get_model_field_names(model)
         field_names.append('pk')
@@ -244,7 +244,8 @@ class BenchmarkModel(object):
         keys = tuple(params.keys())
         for key in keys:
             if not cls.validate_key(cls, key):
-                return cls.get_response_by_code(24, msg_append=key)
+                return cls.get_response_by_code(24 + SETTINGS.CODE_OFFSET, msg_append=key)
+        return None
 
     @classmethod
     def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None, using='default'):
@@ -271,9 +272,9 @@ class BenchmarkModel(object):
                 limit = 0
             if limit == 0:
                 if offset > 1:
-                    query_set = query_set[offset-1:]
+                    query_set = query_set[offset - 1:]
             else:
-                query_set = query_set[offset-1:offset-1+limit]
+                query_set = query_set[offset - 1:offset - 1 + limit]
         if select_related is not None:
             # create data structures of model relations
             num_select_related = []
@@ -286,14 +287,14 @@ class BenchmarkModel(object):
                 for relate in num_related:
                     index = relate.rfind('__')
                     prefix_field_name = relate[:index]
-                    if prefix_field_name not in num_select_related[i-1]:
-                        if prefix_field_name not in num_select_related[len(num_select_related)-i-2]:
-                            num_select_related[len(num_select_related)-i-2].append(prefix_field_name)
+                    if prefix_field_name not in num_select_related[i - 1]:
+                        if prefix_field_name not in num_select_related[len(num_select_related) - i - 2]:
+                            num_select_related[len(num_select_related) - i - 2].append(prefix_field_name)
             for num_related in num_select_related:
                 for relate in num_related:
                     index = relate.rfind('__')
                     if index != -1:
-                        field_name = relate[index+2:]
+                        field_name = relate[index + 2:]
                         prefix_field_name = relate[:index]
                         model = relates[prefix_field_name]['related_model']
                         pre_relate = relates[prefix_field_name]
@@ -329,7 +330,7 @@ class BenchmarkModel(object):
                             relate_type = 'to_many'    # reverse many to one
                             related_model = field.rel.related_model
                     else:
-                        return cls.get_response_by_code(14, msg_append=relate)
+                        return cls.get_response_by_code(14 + SETTINGS.CODE_OFFSET, msg_append=relate)
                     if pre_relate is None:
                         level = 0
                         level_root = None
@@ -413,11 +414,11 @@ class BenchmarkModel(object):
                                 else:
                                     select_related_fields = OrderedDict()
                                     for node in root['level_nodes']:
-                                        select_related_fields[node['full_name'][len(root['full_name'])+2:]] = node['related_model']
+                                        select_related_fields[node['full_name'][len(root['full_name']) + 2:]] = node['related_model']
                                     pre_root_dict[field_name_objects] = cls.get_select_related(
-                                            pre_root_dict[field_name_objects],
-                                            select_related_fields,
-                                            pre_root_dict[field_name]
+                                        pre_root_dict[field_name_objects],
+                                        select_related_fields,
+                                        pre_root_dict[field_name]
                                     )
                                 root['list_object_roots'].append(pre_root_dict[field_name_objects])
                                 root['list_dict_roots'].append(pre_root_dict[field_name])
@@ -481,14 +482,14 @@ class BenchmarkModel(object):
                     else:
                         query_set = query_set.using(using).filter(**{unique_key: unique_value})
                 if pk is not None and len(list_keys) > 0:    # put
-                    return cls.get_response_by_code(10, msg=(list_keys,))
+                    return cls.get_response_by_code(10 + SETTINGS.CODE_OFFSET, msg=(list_keys,))
                 if query_set.exists():
                     if pk is None:    # post
-                        return cls.get_response_by_code(5, data=[cls.model_to_dict(_) for _ in query_set])
+                        return cls.get_response_by_code(5 + SETTINGS.CODE_OFFSET, data=[cls.model_to_dict(_) for _ in query_set])
                     else:             # put
                         for item in query_set:
                             if pk != item.pk:
-                                return cls.get_response_by_code(5, data=[cls.model_to_dict(_) for _ in query_set])
+                                return cls.get_response_by_code(5 + SETTINGS.CODE_OFFSET, data=[cls.model_to_dict(_) for _ in query_set])
         return cls.get_response_by_code()
 
     @classmethod
@@ -528,9 +529,9 @@ class BenchmarkModel(object):
                                 if getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
                                     setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 0)
                                 else:
-                                    return cls.get_response_by_code(4)
+                                    return cls.get_response_by_code(4 + SETTINGS.CODE_OFFSET)
                     if is_relationship_field:
-                        if field.many_to_one or field.one_to_one :
+                        if field.many_to_one or field.one_to_one:
                             if SETTINGS.MODEL_DELETE_FLAG:
                                 if isinstance(value, list):    # 目前只有多对多关系表会有 list 参数
                                     values = value
@@ -541,9 +542,9 @@ class BenchmarkModel(object):
                                         related_item = field.related_model.objects.using(using).get(**{field.target_field.name: _value})
                                         if hasattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
                                             if getattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
-                                                return cls.get_response_by_code(8, msg=(key, _value))
+                                                return cls.get_response_by_code(8 + SETTINGS.CODE_OFFSET, msg=(key, _value))
                                     else:
-                                        return cls.get_response_by_code(9, msg=(key, _value))
+                                        return cls.get_response_by_code(9 + SETTINGS.CODE_OFFSET, msg=(key, _value))
                             foreign_key = field.attname
                             foreign_key_add[foreign_key] = data[key]
                             foreign_key_del.append(key)
@@ -594,7 +595,7 @@ class BenchmarkModel(object):
                                     list_data.append(_d)
                 if len(list_data) == 0:
                     if not insert_multiple_data:
-                        return cls.get_response_by_code(13)
+                        return cls.get_response_by_code(13 + SETTINGS.CODE_OFFSET)
                     fail_count += 1
                 try:
                     for pd in list_data:
@@ -610,7 +611,7 @@ class BenchmarkModel(object):
                     if hasattr(e, 'args'):
                         if e.args[0] == 1048 or e.args[0].startswith('NOT NULL constraint failed: '):    # field cannot be None (很可能还有其他类型的错误, 待增加)
                             if not insert_multiple_data:
-                                return cls.get_response_by_code(1, str(e))
+                                return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                             fail_count += 1
                     data_ = {}
                     for key, value in data.items():
@@ -621,7 +622,7 @@ class BenchmarkModel(object):
                     exist_item = cls.objects.using(using).get(**data_)
                     if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
                         if not insert_multiple_data:
-                            return cls.get_response_by_code(1, str(e))
+                            return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                         fail_count += 1
                     if SETTINGS.MODEL_DELETE_FLAG is not None and hasattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
                         setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 1)
@@ -650,7 +651,7 @@ class BenchmarkModel(object):
                 except Exception as e:
                     print(traceback.format_exc())
                     if not insert_multiple_data:
-                        return cls.get_response_by_code(1, str(e))
+                        return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                     fail_count += 1
             if not insert_multiple_data:
                 res = cls.get_response_by_code(SETTINGS.SUCCESS_CODE, msg_append=foreign_key_does_not_exist_msg)
@@ -669,7 +670,7 @@ class BenchmarkModel(object):
             else:
                 data[SETTINGS.MODEL_PRIMARY_KEY] = data.pop(primary_key_name)
         if SETTINGS.MODEL_PRIMARY_KEY not in data.keys():
-            return cls.get_response_by_code(2)
+            return cls.get_response_by_code(2 + SETTINGS.CODE_OFFSET)
         pk = data.pop(SETTINGS.MODEL_PRIMARY_KEY)
         del_keys = []
         foreign_key_add = {}
@@ -698,7 +699,7 @@ class BenchmarkModel(object):
         try:
             m = cls.objects.using(using).get(pk=pk)
         except:
-            return cls.get_response_by_code(6)
+            return cls.get_response_by_code(6 + SETTINGS.CODE_OFFSET)
         # when using delete flag, you cannot define "unique_together" in models.
         # "unique_together" should be define in config.py.
         # "unique_together" function (detect for unique constraint) is processed here.
@@ -710,7 +711,7 @@ class BenchmarkModel(object):
                 return res
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             if getattr(m, SETTINGS.MODEL_DELETE_FLAG):
-                return cls.get_response_by_code(7)
+                return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET)
         for key, value in data.items():
             setattr(m, key, value)
         if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(m, SETTINGS.MODEL_MODIFIER):
@@ -719,7 +720,7 @@ class BenchmarkModel(object):
             m.save(using=using)
         except Exception as e:
             print(traceback.format_exc())
-            return cls.get_response_by_code(1, str(e))
+            return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
         return cls.get_response_by_code()
 
     @classmethod
@@ -730,11 +731,11 @@ class BenchmarkModel(object):
             try:
                 m = cls.objects.using(using).get(pk=pk)
             except:
-                return cls.get_response_by_code(6, data={'model': cls.__name__, 'pk': pk})
+                return cls.get_response_by_code(6 + SETTINGS.CODE_OFFSET, data={'model': cls.__name__, 'pk': pk})
             if SETTINGS.MODEL_DELETE_FLAG:
                 now_delete_flag = True if getattr(m, SETTINGS.MODEL_DELETE_FLAG) != 0 else False
                 if now_delete_flag == delete_flag:
-                    return cls.get_response_by_code(7, data={'model': cls.__name__, 'pk': pk})
+                    return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET, data={'model': cls.__name__, 'pk': pk})
         else:
             now_delete_flag = True if getattr(m, SETTINGS.MODEL_DELETE_FLAG) != 0 else False
             if now_delete_flag == delete_flag:
@@ -769,7 +770,7 @@ class BenchmarkModel(object):
                         if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:    # code = 7
                             res_data.append(res[SETTINGS.DATA])
             if len(res_data) > 0:
-                return cls.get_response_by_code(11, data=res_data)
+                return cls.get_response_by_code(11 + SETTINGS.CODE_OFFSET, data=res_data)
         return cls.get_response_by_code()
 
     @classmethod
@@ -794,28 +795,27 @@ class BenchmarkModel(object):
                         try:
                             pk = pk_cls(pk)
                         except ValueError:
-                            return cls.get_response_by_code(6, data={'pk': pk})
+                            return cls.get_response_by_code(6 + SETTINGS.CODE_OFFSET, data={'pk': pk})
                     if pk not in all_pk:
-                        return cls.get_response_by_code(6, data={'pk': pk})
+                        return cls.get_response_by_code(6 + SETTINGS.CODE_OFFSET, data={'pk': pk})
                     elif all_delete_flag[all_pk.index(pk)] == delete_flag:
-                        return cls.get_response_by_code(7, data={'pk': pk})
+                        return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET, data={'pk': pk})
             else:
                 pk = data['pk']
                 pks = [pk]
                 try:
                     m = cls.objects.using(using).get(pk=pk)
                 except:
-                    return cls.get_response_by_code(6, data={'pk': pk})
+                    return cls.get_response_by_code(6 + SETTINGS.CODE_OFFSET, data={'pk': pk})
                 m_delete_flag = cls.model_get_delete_flag(m)
                 if m_delete_flag is not None:
                     m_delete_flag = False if m_delete_flag == 0 else True
                     if SETTINGS.MODEL_DELETE_FLAG is not None and m_delete_flag == delete_flag:
-                        return cls.get_response_by_code(7, data={'pk': pk})
+                        return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET, data={'pk': pk})
             # delete
             for pk in pks:
                 res = cls.delete_related_models(pk=pk, delete_flag=delete_flag, user=user, using=using)
                 if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                     return res
             return cls.get_response_by_code()
-        else:
-            return cls.get_response_by_code(2)
+        return cls.get_response_by_code(2 + SETTINGS.CODE_OFFSET)

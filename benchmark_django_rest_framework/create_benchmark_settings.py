@@ -17,15 +17,15 @@ DATA = 'data'      # the data field name
 SUCCESS_COUNT = 'success_count'    # insert success count field name when data of http post request is a list
 
 # DATA_STYLE is the style of DATA field for http get response.
-# If DATA_STYLE is 1: DATA a list including every model instances of the filter result for the models in dict format.
-# If DATA_STYLE is 2:
+# If DATA_STYLE is "list": DATA is a list including every model instances of the filter result for the models in dict format.
+# If DATA_STYLE is "dict":
 #     1. When the primary key of the primary_model is in the request uri parameter, DATA is a dict for the only one
 #        filter result for the models. If the data with this primary key doesn't exist, DATA is null.
 #     2. In the other situation, DATA a dict which has a RESULT field. The value of the RESULT field is a list including
-#        every model instances of the filter result for the models in dict format, same as when DATA_STYLE is 1.
+#        every model instances of the filter result for the models in dict format, same as when DATA_STYLE is "list".
 #        Additionally, the DATA include COUNT, NEXT, PREVIOUS fields. See the comments of these 3 fields for more detail
 #        information.
-DATA_STYLE = 2
+DATA_STYLE = 'dict'
 RESULT = 'result'
 COUNT = 'count'    # the count of items in result list
 # If OFFSET and PAGE are in request parameters, the value of NEXT is the next page url.
@@ -73,6 +73,8 @@ DICT_RESPONSE_BY_CODE = {
 for _code, _res in DICT_RESPONSE_BY_CODE.items():
     if int(_code) < 200:
         _res[CODE] = int(_code) + CODE_OFFSET
+    else:
+        _res[CODE] = int(_code)
 
 
 def GET_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None, msg_append=None):
@@ -166,6 +168,9 @@ Q_OR = '|'
 # And you cannot use "," because it is the splitter of elements in the list in http get request by this framework.
 Q_AND = '$'
 
+# The keyword the parameter name of upload file in http request body.
+FILE = 'file'
+
 # The class variable name of sub-class of BenchmarkApiView for using django multiple databases.
 # The choice of value of this variable can be the DATABASES.keys() defined in django "settings.py" file.
 USING = 'using'
@@ -252,7 +257,7 @@ OMIT_UN_EDITABLE_FIELDS = False
 # between the style of python and java.
 # For example, transform employeeName to employee_name after BenchmarkApiView receive request.
 # Conversely, transform employee_name to employeeName before BenchmarkApiView return response.
-TRANSFER_KEYS = True
+TRANSFER_KEYS = False
 
 '''
 

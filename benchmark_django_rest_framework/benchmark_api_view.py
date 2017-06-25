@@ -3,7 +3,14 @@
 from django.http import JsonResponse, StreamingHttpResponse
 from rest_framework.views import APIView
 from rest_framework.serializers import ModelSerializer
-import copy, django, json, math, logging, rest_framework, re, sys
+import copy
+import django
+import json
+import math
+import logging
+import rest_framework
+import re
+import sys
 
 
 SETTINGS = getattr(django.conf.settings, 'BENCHMARK_SETTINGS', None)
@@ -79,11 +86,17 @@ class BenchmarkAPIView(APIView):
         if not hasattr(self, 'is_ready'):
             self.__class__.init()
         super(BenchmarkAPIView, self).__init__()
+        self.request = None
         self.params = {}
         self.uri_params = {}
         self.data = {}
+        self.host = None
         self.path = ''
         self.method = ''
+        self.offset = None
+        self.limit = None
+        self.page = None
+        self.file = None
         self.user = None
         self.select_related = None
         self.values = None
@@ -100,15 +113,12 @@ class BenchmarkAPIView(APIView):
 
     # 检查请求字段是否存在
     def check_request_param_data(self):
+        is_check_params = True
         for param_data, keys in zip((self.params, self.data), (self.check_params[self.method], self.check_data[self.method])):
-            if keys == self.check_params[self.method]:
-                err_code = 15
-            else:
-                err_code = 16
             for key in keys:    # 必须存在的参数
                 if isinstance(key, str):
                     if key not in param_data.keys():
-                        return self.get_response_by_code(err_code, msg_append=key)
+                        return self.get_response_by_code(15 if is_check_params else 16 + SETTINGS.CODE_OFFSET, msg_append=key)
                 else:    # 只需存在其中一个的参数组
                     found = False
                     for _key in key:
@@ -116,7 +126,8 @@ class BenchmarkAPIView(APIView):
                             found = True
                             break
                     if not found:
-                        return self.get_response_by_code(err_code, msg_append=key)
+                        return self.get_response_by_code(15 if is_check_params else 16 + SETTINGS.CODE_OFFSET, msg_append=key)
+            is_check_params = False
         return self.get_response_by_code()
 
     # 提取请求 body 中的 data 或 json
@@ -161,11 +172,11 @@ class BenchmarkAPIView(APIView):
                     query_set = cls.primary_model.objects.filter(**unique_post_data)
                     if query_set.exists():
                         if pk is None:
-                            return cls.get_response_by_code(5)
+                            return cls.get_response_by_code(5 + SETTINGS.CODE_OFFSET)
                         else:
                             for item in query_set:
                                 if pk != item.pk:
-                                    return cls.get_response_by_code(5)
+                                    return cls.get_response_by_code(5 + SETTINGS.CODE_OFFSET)
         return cls.get_response_by_code()
 
     @classmethod
@@ -178,9 +189,10 @@ class BenchmarkAPIView(APIView):
         self.check_primary_model('get_model')
         params = self.params
         params.update(self.uri_params)
-        return self.primary_model.get_model(params=params, select_related=self.select_related, values=self.values,
-                                           values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
-                                           )
+        return self.primary_model.get_model(
+            params=params, select_related=self.select_related, values=self.values,
+            values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
+        )
 
     def serializer_check(self, data):
         if isinstance(data, dict):
@@ -210,9 +222,9 @@ class BenchmarkAPIView(APIView):
                         if len(errors) != 0:
                             exception_detail[key] = errors
                 if len(exception_detail) > 0:
-                    return self.get_response_by_code(20, data=exception_detail)
+                    return self.get_response_by_code(20 + SETTINGS.CODE_OFFSET, data=exception_detail)
             except Exception as e:
-                return self.get_response_by_code(1, msg=str(e))
+                return self.get_response_by_code(1 + SETTINGS.CODE_OFFSET, msg=str(e))
         return None
 
     # post 请求对应的 model 操作
@@ -232,11 +244,11 @@ class BenchmarkAPIView(APIView):
             return res
         if isinstance(post_data, dict):
             if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
-                return self.get_response_by_code(12)
+                return self.get_response_by_code(12 + SETTINGS.CODE_OFFSET)
         elif isinstance(post_data, (list, tuple)):
             for pd in post_data:
                 if SETTINGS.MODEL_PRIMARY_KEY in pd.keys():
-                    return self.get_response_by_code(12)
+                    return self.get_response_by_code(12 + SETTINGS.CODE_OFFSET)
         else:
             raise Exception('data should be dict, list or tuple')
         return self.primary_model.post_model(post_data, user=self.user.get_username(), using=self.using)
@@ -268,76 +280,88 @@ class BenchmarkAPIView(APIView):
         if self.access[self.method] == 'all':    # every one can access
             return self.get_response_by_code()
         if self.access[self.method] is None:    # no one can access
-            return self.get_response_by_code(3)
+            return self.get_response_by_code(3 + SETTINGS.CODE_OFFSET)
         if not self.user.is_authenticated():
-            return self.get_response_by_code(21)
+            return self.get_response_by_code(21 + SETTINGS.CODE_OFFSET)
         if self.access[self.method] == 'user':    # login user can access
             return self.get_response_by_code()
         if self.access[self.method] == 'staff':    # staff or admin can access
-            return self.get_response_by_code() if self.user.is_staff or self.user.is_superuser else self.get_response_by_code(22)
+            return self.get_response_by_code() if self.user.is_staff or self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
         if self.access[self.method] == 'admin':    # admin can access
-            return self.get_response_by_code() if self.user.is_superuser else self.get_response_by_code(22)
+            return self.get_response_by_code() if self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
         if self.access[self.method] == 'creator':    # creator or admin can access put or delete method
             if SETTINGS.MODEL_CREATOR not in self.primary_model._meta.get_fields():
                 raise Exception('primary model %s has no field %s' % (self.primary_model.__name__, SETTINGS.MODEL_CREATOR))
             if pk is None:
-                return self.get_response_by_code(2)
+                return self.get_response_by_code(2 + SETTINGS.CODE_OFFSET)
             if not isinstance(pk, (list, tuple)):
                 pk = [pk]
             if SETTINGS.MODEL_DELETE_FLAG is None:
                 query_set = self.primary_model.objects.filter(pk__in=pk)
                 if query_set.count == 0:
-                    return self.get_response_by_code(6)
+                    return self.get_response_by_code(6 + SETTINGS.CODE_OFFSET)
             else:
                 query_set = self.primary_model.objects.filter(**{'pk__in': pk, SETTINGS.MODEL_DELETE_FLAG: 0})
                 if query_set.count == 0:
-                    return self.get_response_by_code(7)
+                    return self.get_response_by_code(7 + SETTINGS.CODE_OFFSET)
             not_creator_pks = []
             for item in query_set:
                 creator = getattr(item, SETTINGS.MODEL_CREATOR, None)
                 if creator != self.user.username:
                     not_creator_pks.append(item.pk)
             if len(not_creator_pks) > 0:
-                return self.get_response_by_code(23)
+                return self.get_response_by_code(23 + SETTINGS.CODE_OFFSET)
             return self.get_response_by_code()
+
+    @staticmethod
+    def java_to_python(string):
+        new_string = ''
+        for alphabet in string:
+            if alphabet.isupper():
+                new_string = new_string + '_' + alphabet.lower()
+            else:
+                new_string = new_string + alphabet
+        return new_string
 
     def java_to_python_keys(self):
         if SETTINGS.TRANSFER_KEYS:
-            for param_data in (self.params, self.data):
+            for is_params, param_data in zip((True, False), (self.params, self.data)):
                 keys = list(param_data.keys())
                 for key in keys:
-                    new_key = ''
-                    for alphabet in key:
-                        if alphabet.isupper():
-                            new_key = new_key + '_' + alphabet.lower()
+                    if key in SETTINGS.KEYWORDS_WITH_VALUE_NEED_TRANSFER:
+                        value = param_data[key]
+                        if isinstance(value, list):
+                            for i, v in enumerate(value):
+                                value[i] = self.java_to_python(v)
                         else:
-                            new_key = new_key + alphabet
-                    param_data[new_key] = param_data.pop(key)
+                            param_data[key] = self.java_to_python(value)
+                    else:
+                        param_data[self.java_to_python(key)] = param_data.pop(key)
 
     @staticmethod
-    def python_to_java_key(key):
-        new_key = ''
+    def python_to_java(string):
+        new_string = ''
         to_upper = False
-        for i, alphabet in enumerate(key):
+        for i, alphabet in enumerate(string):
             if to_upper:
                 if alphabet.islower():
-                    new_key = new_key + alphabet.upper()
+                    new_string = new_string + alphabet.upper()
                 else:
-                    new_key = new_key + alphabet
+                    new_string = new_string + alphabet
                 to_upper = False
             elif alphabet == '_':
-                if i+1 < len(key):
-                    if key[i+1] == '_':
-                        new_key = new_key + alphabet
+                if i + 1 < len(string):
+                    if string[i + 1] == '_':
+                        new_string = new_string + alphabet
                         continue
-                if i-1 > 0:
-                    if key[i-1] == '_':
-                        new_key = new_key + alphabet
+                if i - 1 > 0:
+                    if string[i - 1] == '_':
+                        new_string = new_string + alphabet
                         continue
                 to_upper = True
             else:
-                new_key = new_key + alphabet
-        return new_key
+                new_string = new_string + alphabet
+        return new_string
 
     def python_to_java_keys(self, res):
         if SETTINGS.TRANSFER_KEYS:
@@ -346,7 +370,7 @@ class BenchmarkAPIView(APIView):
                 for key in keys:
                     if isinstance(res[key], (dict, list)):
                         self.python_to_java_keys(res[key])
-                    new_key = self.python_to_java_key(key)
+                    new_key = self.python_to_java(key)
                     if key != new_key:
                         res[new_key] = res.pop(key)
             elif isinstance(res, list):
@@ -368,18 +392,20 @@ class BenchmarkAPIView(APIView):
 
     # 处理各种请求的入口，解析各字段并进行处理
     def begin(self, request, uri_params={}):
+        self.request = request
         self.user = request.user
         self.host = request.get_host()
         self.path = request.path
         self.method = request.method.lower()
+        self.file = request.FILES.get(SETTINGS.FILE, None)
         if self.method in self.view_not_support_methods:
-            return self.get_response_by_code(3)
+            return self.get_response_by_code(3 + SETTINGS.CODE_OFFSET)
         self.params = {}
         for key, value in request.GET.items():
             len_value = len(value)
-            if len_value >= 2 and value[0] == '[' and value[len_value-1] == ']':
+            if len_value >= 2 and value[0] == '[' and value[len_value - 1] == ']':
                 value = value[1:-1].split(',')
-            elif key == SETTINGS.VALUES and len_value > 3 and value[:2] == '-[' and value[len_value-1] == ']':
+            elif key == SETTINGS.VALUES and len_value > 3 and value[:2] == '-[' and value[len_value - 1] == ']':
                 self.values_white_list = False
                 value = value[2:-1].split(',')
             elif key == SETTINGS.VALUES and len_value > 2 and value[0] == '-':
@@ -411,7 +437,11 @@ class BenchmarkAPIView(APIView):
             else:
                 self.params[key] = value
         self.uri_params = uri_params
-        if self.method in ('post', 'put', 'delete'):
+        if self.method == 'get':
+            self.offset = self.params.pop(SETTINGS.OFFSET, None)
+            self.limit = self.params.pop(SETTINGS.LIMIT, None)
+            self.page = self.params.pop(SETTINGS.PAGE, None)
+        elif self.method in ('post', 'put', 'delete'):
             request_data = copy.deepcopy(request.data)
             if isinstance(request_data, dict):
                 self.data = {}
@@ -457,16 +487,21 @@ class BenchmarkAPIView(APIView):
     # 处理各种类型的返回
     def process_response(self, res):
         if isinstance(res, dict):    # dict 转 json 返回
+            if SETTINGS.DATA_STYLE == 'dict':
+                if isinstance(res[SETTINGS.DATA], (list, dict)) and len(res[SETTINGS.DATA]) == 0:
+                    res[SETTINGS.DATA] = None
+                elif isinstance(res[SETTINGS.DATA].get(SETTINGS.RESULT, None), (list, dict)) and len(res[SETTINGS.DATA][SETTINGS.RESULT]) == 0:
+                    res[SETTINGS.DATA][SETTINGS.RESULT] = None
             if SETTINGS.TRANSFER_KEYS:
                 self.python_to_java_keys(res)
             return JsonResponse(res, json_dumps_params={"indent": 2})
-        if isinstance(res, StreamingHttpResponse):    # 流文件返回
+        if isinstance(res, (StreamingHttpResponse, django.http.response.HttpResponse)):    # 流文件, 或已处理好的 http 响应
             return res
         raise Exception('unknown response type: %s' % type(res))
 
-    # 处理分页
-    def pagination(self, res):
-        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_STYLE == 2:
+    # 处理 style 2 的 get 请求分页
+    def paginate(self, res):
+        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_STYLE == 'dict':
             # get one
             if 'pk' in self.uri_params.keys():
                 if len(res[SETTINGS.DATA]) == 0:
@@ -474,14 +509,14 @@ class BenchmarkAPIView(APIView):
                 else:
                     res[SETTINGS.DATA] = res[SETTINGS.DATA][0]
             # get many in pages
-            elif SETTINGS.PAGE in self.params.keys():
+            elif self.page is not None:
                 try:
-                    page = int(self.params[SETTINGS.PAGE])
+                    page = int(self.page)
                 except:
                     page = 1
                 count = len(res[SETTINGS.DATA])
                 try:
-                    limit = int(self.params[SETTINGS.LIMIT])
+                    limit = int(self.limit)
                 except:
                     limit = 0
                 if limit < 0:
@@ -504,27 +539,30 @@ class BenchmarkAPIView(APIView):
                 basic_url = 'http://' + self.host + self.path
                 previous_param_url = None
                 next_param_url = None
+                params = copy.deepcopy(self.params)
+                params[SETTINGS.LIMIT] = limit
+                params[SETTINGS.PAGE] = page
                 if page <= 1:
                     previous_url = None
                 else:
-                    for key, value in self.params.items():
+                    for key, value in params.items():
                         if key == 'page':
-                            value = str(page-1)
+                            value = str(page - 1)
                         if previous_param_url is None:
-                            previous_param_url = '?' + key + '=' + value
+                            previous_param_url = '?' + key + '=' + str(value)
                         else:
-                            previous_param_url += '&' + key + '=' + value
+                            previous_param_url += '&' + key + '=' + str(value)
                     previous_url = basic_url + previous_param_url
                 if page >= page_count:
                     next_url = None
                 else:
-                    for key, value in self.params.items():
+                    for key, value in params.items():
                         if key == 'page':
-                            value = str(page+1)
+                            value = str(page + 1)
                         if next_param_url is None:
-                            next_param_url = '?' + key + '=' + value
+                            next_param_url = '?' + key + '=' + str(value)
                         else:
-                            next_param_url += '&' + key + '=' + value
+                            next_param_url += '&' + key + '=' + str(value)
                     next_url = basic_url + next_param_url
                 res[SETTINGS.DATA] = {SETTINGS.RESULT: result, SETTINGS.COUNT: count,
                                       SETTINGS.NEXT: next_url, SETTINGS.PREVIOUS: previous_url}
@@ -537,8 +575,8 @@ class BenchmarkAPIView(APIView):
         res = self.begin(request, uri_params)
         if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             res = self.get_model()
-        if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
-            self.pagination(res)
+        if isinstance(res, dict) and SETTINGS.CODE in res.keys() and res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
+            self.paginate(res)
         return self.process_response(res)
 
     # 处理 post 请求
