@@ -287,7 +287,7 @@ class BenchmarkAPIView(APIView):
             return self.get_response_by_code()
         if self.access[self.method] == 'staff':    # staff or admin can access
             return self.get_response_by_code() if self.user.is_staff or self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
-        if self.access[self.method] == 'admin':    # admin can access
+        if self.access[self.method] == 'superuser':    # superuser can access
             return self.get_response_by_code() if self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
         if self.access[self.method] == 'creator':    # creator or admin can access put or delete method
             if SETTINGS.MODEL_CREATOR not in self.primary_model._meta.get_fields():
@@ -311,7 +311,8 @@ class BenchmarkAPIView(APIView):
                     not_creator_pks.append(item.pk)
             if len(not_creator_pks) > 0:
                 return self.get_response_by_code(23 + SETTINGS.CODE_OFFSET)
-            return self.get_response_by_code()
+        raise Exception('unknown access type %s, choices are None, "all", "user", "staff", "superuser", "creator"' %
+                        self.access[self.method])
 
     @staticmethod
     def java_to_python(string):
