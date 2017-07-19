@@ -1,6 +1,7 @@
 # -*- coding:utf-8 -*-
 
 from collections import OrderedDict
+from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.db.models.sql.constants import QUERY_TERMS
 from itertools import chain
@@ -167,6 +168,15 @@ class BenchmarkModel(object):
             if exclude and f.name in exclude:
                 continue
             data[f.name] = f.value_from_object(instance)
+        return data
+
+    @classmethod
+    def model_to_dict_process_many_to_many(cls, instance):
+        data = cls.model_to_dict(instance)
+        for key, value in data.items():
+            if isinstance(value, django.db.models.query.QuerySet):
+                many = value.all()
+                data[key] = [one.pk for one in many]
         return data
 
     @classmethod
@@ -360,9 +370,14 @@ class BenchmarkModel(object):
                             location = cls.get_location(level_root)
                     else:
                         location = None
+                    if pre_root is None:
+                        field_name_from_pre_root = relate
+                    else:
+                        field_name_from_pre_root = relate[len(pre_root['field_name']) + 2:]
                     relates[relate] = {
                         'full_name': relate,
                         'field_name': field_name,
+                        'field_name_from_pre_root': field_name_from_pre_root,
                         'model': model,
                         'related_model': related_model,
                         'relate_type': relate_type,
@@ -403,8 +418,12 @@ class BenchmarkModel(object):
                         for pre_root_objects, pre_root_dicts in zip(list_pre_root_objects, list_pre_root_dicts):
                             for pre_root_object, pre_root_dict in zip(pre_root_objects, pre_root_dicts):
                                 field_name = root['field_name']
+                                field_names_from_pre_root = root['field_name_from_pre_root'].split('__')
                                 field_name_objects = field_name + '__objects__'
-                                pre_root_dict[field_name_objects] = getattr(pre_root_object, field_name).all()
+                                obj = pre_root_object
+                                for name in field_names_from_pre_root:
+                                    obj = getattr(obj, name)
+                                pre_root_dict[field_name_objects] = obj.all()
                                 pre_root_dict[field_name] = []
                                 if len(root['level_nodes']) == 0:
                                     for item in pre_root_dict[field_name_objects]:
@@ -504,14 +523,14 @@ class BenchmarkModel(object):
             raise Exception('data should be dict, list or tuple')
         list_many_to_many_relations = []
         # check and process before insert data to database
-        for data in post_data:
+        exist_items = [None] * len(post_data)
+        for data, exist_item in zip(post_data, exist_items):
             many_to_many_relations = {}
             del_keys = []
             foreign_key_add = {}
             foreign_key_del = []
             field_names = cls.get_model_field_names(cls)
             primary_key_name = cls._meta.pk.attname
-            exist_item = None
             for key, value in data.items():
                 if key in field_names:
                     is_relationship_field = False
@@ -566,10 +585,13 @@ class BenchmarkModel(object):
                     return res
             list_many_to_many_relations.append(many_to_many_relations)
         # insert data to database
-        success_pks = []
-        fail_count = 0
+        total_count = len(post_data)
+        created_count = 0
+        created_items = []
+        failed_items = []
+        msgs = []
         foreign_key_does_not_exist_msg = ''
-        for data, many_to_many_relations in zip(post_data, list_many_to_many_relations):
+        for data, many_to_many_relations, exist_item in zip(post_data, list_many_to_many_relations, exist_items):
             if exist_item is None:
                 list_data = []    # to support batch insert by values of fields in request data in list
                 for key, _value in data.items():
@@ -594,25 +616,47 @@ class BenchmarkModel(object):
                                     _d[key] = v
                                     list_data.append(_d)
                 if len(list_data) == 0:
+                    res = cls.get_response_by_code(13 + SETTINGS.CODE_OFFSET)
                     if not insert_multiple_data:
-                        return cls.get_response_by_code(13 + SETTINGS.CODE_OFFSET)
-                    fail_count += 1
+                        return res
+                    failed_items.append(data)
+                    if res[SETTINGS.MSG] not in msgs:
+                        msgs.append(res[SETTINGS.MSG])
+                creator = None
+                modifier = None
+                if user is not None:
+                    if SETTINGS.MODEL_CREATOR is not None and hasattr(cls, SETTINGS.MODEL_CREATOR):
+                        if isinstance(getattr(cls, SETTINGS.MODEL_CREATOR).__class__,
+                                      django.db.models.fields.related_descriptors.ForwardManyToOneDescriptor):
+                            creator = get_user_model().objects.get(username=user)
+                        else:
+                            creator = user
+                    if SETTINGS.MODEL_MODIFIER is not None and hasattr(cls, SETTINGS.MODEL_MODIFIER):
+                        if isinstance(getattr(cls, SETTINGS.MODEL_MODIFIER).__class__,
+                                      django.db.models.fields.related_descriptors.ForwardManyToOneDescriptor):
+                            modifier = get_user_model().objects.get(username=user)
+                        else:
+                            modifier = user
                 try:
                     for pd in list_data:
                         exist_item = cls(**pd)
-                        if user is not None:
-                            if SETTINGS.MODEL_CREATOR is not None and hasattr(exist_item, SETTINGS.MODEL_CREATOR):
-                                setattr(exist_item, SETTINGS.MODEL_CREATOR, user)
-                            if SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
-                                setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
+                        if creator is not None:
+                            setattr(exist_item, SETTINGS.MODEL_CREATOR, creator)
+                        if modifier is not None:
+                            setattr(exist_item, SETTINGS.MODEL_MODIFIER, modifier)
                         exist_item.save(using=using)
-                        success_pks.append(exist_item.pk)
+                        created_count += 1
+                        created_items.append(cls.model_to_dict(exist_item))
                 except django.db.utils.IntegrityError as e:
                     if hasattr(e, 'args'):
                         if e.args[0] == 1048 or e.args[0].startswith('NOT NULL constraint failed: '):    # field cannot be None (很可能还有其他类型的错误, 待增加)
+                            res = cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                             if not insert_multiple_data:
-                                return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
-                            fail_count += 1
+                                return res
+                            failed_items.append(data)
+                            if res[SETTINGS.MSG] not in msgs:
+                                msgs.append(res[SETTINGS.MSG])
+
                     data_ = {}
                     for key, value in data.items():
                         if isinstance(value, list):
@@ -621,15 +665,19 @@ class BenchmarkModel(object):
                             data_[key] = value
                     exist_item = cls.objects.using(using).get(**data_)
                     if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
+                        res = cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                         if not insert_multiple_data:
-                            return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
-                        fail_count += 1
+                            return res
+                        failed_items.append(data)
+                        if res[SETTINGS.MSG] not in msgs:
+                            msgs.append(res[SETTINGS.MSG])
                     if SETTINGS.MODEL_DELETE_FLAG is not None and hasattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
                         setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 1)
                     if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                         setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
                     exist_item.save(using=using)
-                    success_pks.append(exist_item.pk)
+                    created_count += 1
+                    created_items.append(cls.model_to_dict(exist_item))
                 for key, value in many_to_many_relations.items():
                     if isinstance(value, list):
                         values = value
@@ -647,19 +695,23 @@ class BenchmarkModel(object):
                     if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                         setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
                     exist_item.save(using=using)
-                    success_pks.append(exist_item.pk)
+                    created_count += 1
+                    created_items.append(cls.model_to_dict(exist_item))
                 except Exception as e:
                     print(traceback.format_exc())
+                    res = cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                     if not insert_multiple_data:
-                        return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
-                    fail_count += 1
+                        return res
+                    failed_items.append(data)
+                    if res[SETTINGS.MSG] not in msgs:
+                        msgs.append(res[SETTINGS.MSG])
             if not insert_multiple_data:
-                res = cls.get_response_by_code(SETTINGS.SUCCESS_CODE, msg_append=foreign_key_does_not_exist_msg)
+                res = cls.get_response_by_code(SETTINGS.SUCCESS_CODE, msg_append=foreign_key_does_not_exist_msg,
+                                               data=cls.model_to_dict_process_many_to_many(exist_item))
                 return res
-        res = cls.get_response_by_code()
-        res[SETTINGS.DATA] = {SETTINGS.MODEL_PRIMARY_KEY: success_pks if len(success_pks) > 1 else success_pks[0]}
-        res[SETTINGS.SUCCESS_COUNT] = len(success_pks)
-        return res
+        data = {SETTINGS.TOTAL_COUNT: total_count, SETTINGS.CREATED_COUNT: created_count,
+                SETTINGS.FAILED_ITEMS: failed_items, SETTINGS.CREATED_ITEMS: created_items}
+        return cls.get_response_by_code(data=data)
 
     @classmethod
     def put_model(cls, data, user=None, using='default'):
@@ -721,7 +773,7 @@ class BenchmarkModel(object):
         except Exception as e:
             print(traceback.format_exc())
             return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
-        return cls.get_response_by_code()
+        return cls.get_response_by_code(data=cls.model_to_dict_process_many_to_many(m))
 
     @classmethod
     def delete_related_models(cls, m=None, pk=None, delete_flag=True, user=None, modifier=None, delete_time=None,
@@ -782,6 +834,7 @@ class BenchmarkModel(object):
                 delete_flag = True
             # check every pk
             if isinstance(data['pk'], list):
+                delete_multiple_data = True
                 pks = data['pk']
                 query_set = cls.objects.using(using).all()
                 all_pk = [_.pk for _ in query_set]
@@ -801,6 +854,7 @@ class BenchmarkModel(object):
                     elif all_delete_flag[all_pk.index(pk)] == delete_flag:
                         return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET, data={'pk': pk})
             else:
+                delete_multiple_data = False
                 pk = data['pk']
                 pks = [pk]
                 try:
@@ -813,9 +867,26 @@ class BenchmarkModel(object):
                     if SETTINGS.MODEL_DELETE_FLAG is not None and m_delete_flag == delete_flag:
                         return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET, data={'pk': pk})
             # delete
+            total_count = 0
+            failed = []
+            msgs = []
+            deleted_pks = []
             for pk in pks:
                 res = cls.delete_related_models(pk=pk, delete_flag=delete_flag, user=user, using=using)
                 if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
-                    return res
-            return cls.get_response_by_code()
+                    if res[SETTINGS.MSG] not in msgs:
+                        msgs.append(res[SETTINGS.MSG])
+                else:
+                    deleted_pks.append(pk)
+                total_count += 1
+            if delete_multiple_data:
+                data = {SETTINGS.TOTAL_COUNT: total_count, SETTINGS.DELETED_COUNT: len(deleted_pks),
+                        SETTINGS.FAILED_ITEMS: failed, SETTINGS.DELETED_PKS: deleted_pks}
+            else:
+                data = {SETTINGS.DELETED_PKS: deleted_pks[0]}
+            if len(msgs) > 0:
+                return cls.get_response_by_code(26 + SETTINGS.CODE_OFFSET,
+                                                data=data,
+                                                msg_append=str(msgs))
+            return cls.get_response_by_code(data=data)
         return cls.get_response_by_code(2 + SETTINGS.CODE_OFFSET)

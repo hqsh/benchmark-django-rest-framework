@@ -1,8 +1,12 @@
 # -*- coding:utf-8 -*-
 
 from django.http import JsonResponse, StreamingHttpResponse
+from django.utils.decorators import classonlymethod
+from rest_framework.generics import GenericAPIView
+from rest_framework.response import Response
+from rest_framework.serializers import ModelSerializer, Serializer
 from rest_framework.views import APIView
-from rest_framework.serializers import ModelSerializer
+from rest_framework.viewsets import ViewSet
 import copy
 import django
 import json
@@ -38,14 +42,17 @@ class Logger:
         self.logger.removeHandler(self.stream_handler)
 
 
-class BenchmarkAPIView(APIView):
-    class PostSerializer(ModelSerializer):
-        class Meta:
-            pass
+if SETTINGS.PARENT_VIEW == 'APIView':
+    PARENT_VIEW = APIView
+elif SETTINGS.PARENT_VIEW == 'GenericAPIView':
+    PARENT_VIEW = GenericAPIView
+elif SETTINGS.PARENT_VIEW == 'ViewSet':
+    PARENT_VIEW = ViewSet
+else:
+    raise Exception('SETTINGS.PARENT_VIEW should be "APIView", "GenericAPIView" or "ViewSet".')
 
-    class PutSerializer(ModelSerializer):
-        class Meta:
-            pass
+
+class BenchmarkAPIView(PARENT_VIEW):
 
     @classmethod
     def init(cls):
@@ -73,13 +80,8 @@ class BenchmarkAPIView(APIView):
                 cls.view_not_support_methods = ()
         cls.using = getattr(cls, SETTINGS.USING, 'default')
         cls.logger = Logger()
-        cls.PostSerializer.Meta.model = cls.primary_model
-        cls.PostSerializer.Meta.fields = '__all__'
-        cls.PutSerializer.Meta.model = cls.primary_model
-        cls.PutSerializer.Meta.fields = '__all__'
-        cls.access = getattr(cls, SETTINGS.ACCESS, {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'})
-        for method in {'get', 'post', 'put', 'delete'} - set(cls.access.keys()):
-            cls.access[method] = 'all'
+        cls.init_access()
+        cls.init_serializer()
         cls.is_ready = True
 
     def __init__(self):
@@ -102,6 +104,58 @@ class BenchmarkAPIView(APIView):
         self.values = None
         self.values_white_list = True
         self.Qs = None
+
+    @classmethod
+    def init_serializer(cls):
+        if not hasattr(cls, 'serializer_class') or cls.serializer_class is None:
+            if getattr(cls, 'primary_model', None) is None:
+                cls.serializer_class = Serializer
+            else:
+                class BenchmarkSerializer(ModelSerializer):
+                    class Meta:
+                        model = cls.primary_model
+                        fields = '__all__'
+                cls.serializer_class = BenchmarkSerializer
+
+    @classmethod
+    def get_serializer(cls):
+        if not hasattr(cls, 'serializer_class') or cls.serializer_class is None:
+            cls.init_serializer()
+        return cls.serializer_class()
+
+    @classmethod
+    def init_access(cls):
+        cls.access = getattr(cls, SETTINGS.ACCESS, {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'})
+        for method in {'get', 'post', 'put', 'delete'} - set(cls.access.keys()):
+            cls.access[method] = 'all'
+
+    @classonlymethod
+    def as_view(cls, actions=None, **initkwargs):
+        cls.list = cls.get
+        cls.create = cls.post
+        cls.retrieve = cls.get
+        cls.update = cls.put
+        cls.destroy = cls.delete
+        if SETTINGS.PARENT_VIEW == 'ViewSet':
+            cls.init_serializer()
+            if actions is None:
+                has_pk = initkwargs.get('has_pk', False)
+                actions = dict()
+                cls.init_access()
+                if cls.access['get'] is not None:
+                    if has_pk:
+                        actions['get'] = 'retrieve'
+                    else:
+                        actions['get'] = 'list'
+                if not has_pk and cls.access['post'] is not None:
+                    actions['post'] = 'create'
+                if has_pk and cls.access['put'] is not None:
+                    actions['put'] = 'update'
+                if has_pk and cls.access['delete'] is not None:
+                    actions['delete'] = 'destroy'
+            return super().as_view(actions=actions)
+        else:
+            return super().as_view(initkwargs=initkwargs)
 
     @staticmethod
     def get_response_by_code(code=SETTINGS.SUCCESS_CODE, msg=None, data=None, msg_append=None):
@@ -202,25 +256,23 @@ class BenchmarkAPIView(APIView):
         else:
             raise Exception('data should be dict, list or tuple')
         for data in list_data:
-            if self.method == 'post':
-                serializer = self.PostSerializer(data=data)
-            elif self.method == 'put':
-                serializer = self.PutSerializer(data=data)
+            serializer = self.serializer_class(data=data)
+            if self.method == 'put':
                 for field_value in serializer.fields.values():
                     field_value.required = False
             try:
                 serializer.is_valid(raise_exception=True)
             except rest_framework.exceptions.ValidationError as e:
-                if SETTINGS.MODEL_DELETE_FLAG is None:
-                    exception_detail = e.detail
-                else:
-                    exception_detail = {}
-                    for key, errors in e.detail.items():
-                        for error in errors:
-                            if re.match(r'[\w\d_]+ with this [\w\d_ ]+ id already exists.', error):
-                                errors.remove(error)
-                        if len(errors) != 0:
-                            exception_detail[key] = errors
+                exception_detail = {}
+                for key, errors in e.detail.items():
+                    for error in errors:
+                        if SETTINGS.MODEL_DELETE_FLAG is None and (
+                            re.match(r'[\w\d_]+ with this [\w\d_ ]+ id already exists.', error) or
+                            (self.method == 'put' and error == 'This field is required.')
+                        ):
+                            errors.remove(error)
+                    if len(errors) != 0:
+                        exception_detail[key] = errors
                 if len(exception_detail) > 0:
                     return self.get_response_by_code(20 + SETTINGS.CODE_OFFSET, data=exception_detail)
             except Exception as e:
@@ -239,9 +291,6 @@ class BenchmarkAPIView(APIView):
                     pd.update(data)
             else:
                 raise Exception('data should be dict, list or tuple')
-        res = self.serializer_check(post_data)
-        if res is not None:
-            return res
         if isinstance(post_data, dict):
             if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
                 return self.get_response_by_code(12 + SETTINGS.CODE_OFFSET)
@@ -264,9 +313,6 @@ class BenchmarkAPIView(APIView):
     def put_model(self, data=None):
         self.check_primary_model('put_model')
         post_data = self.get_uri_params_data(data)
-        res = self.serializer_check(post_data)
-        if res is not None:
-            return res
         return self.primary_model.put_model(post_data, user=self.user.get_username(), using=self.using)
 
     # delete 请求对应的 model 操作
@@ -277,19 +323,28 @@ class BenchmarkAPIView(APIView):
         return self.primary_model.delete_model(data, user=self.user.get_username(), using=self.using)
 
     def check_access(self, pk=None):
-        if self.access[self.method] == 'all':    # every one can access
-            return self.get_response_by_code()
-        if self.access[self.method] is None:    # no one can access
+        role = self.access[self.method]
+        if role is None:    # no one can access
             return self.get_response_by_code(3 + SETTINGS.CODE_OFFSET)
+        if getattr(django.conf.settings, 'DEBUG', False) and not SETTINGS.NEED_AUTHENTICATION_IN_DEBUG_MODE:
+            return self.get_response_by_code()
+        if not isinstance(role, (str, tuple, list)):
+            raise Exception('The values of access items should be None, str, list or tuple')
+        if isinstance(role, str):
+            roles = [role]
+        else:
+            roles = role
+        if 'all' in roles:    # every one can access
+            return self.get_response_by_code()
         if not self.user.is_authenticated():
             return self.get_response_by_code(21 + SETTINGS.CODE_OFFSET)
-        if self.access[self.method] == 'user':    # login user can access
+        if 'user' in roles:    # login user can access
             return self.get_response_by_code()
-        if self.access[self.method] == 'staff':    # staff or admin can access
+        if 'staff' in roles:    # staff or admin can access
             return self.get_response_by_code() if self.user.is_staff or self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
-        if self.access[self.method] == 'superuser':    # superuser can access
+        if 'superuser' in roles:    # superuser can access
             return self.get_response_by_code() if self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
-        if self.access[self.method] == 'creator':    # creator or admin can access put or delete method
+        if 'creator' in roles:    # creator or admin can access put or delete method
             if SETTINGS.MODEL_CREATOR not in self.primary_model._meta.get_fields():
                 raise Exception('primary model %s has no field %s' % (self.primary_model.__name__, SETTINGS.MODEL_CREATOR))
             if pk is None:
@@ -307,12 +362,23 @@ class BenchmarkAPIView(APIView):
             not_creator_pks = []
             for item in query_set:
                 creator = getattr(item, SETTINGS.MODEL_CREATOR, None)
+                if not isinstance(creator, str):
+                    creator = getattr(creator, 'username', None)
                 if creator != self.user.username:
                     not_creator_pks.append(item.pk)
             if len(not_creator_pks) > 0:
-                return self.get_response_by_code(23 + SETTINGS.CODE_OFFSET)
-        raise Exception('unknown access type %s, choices are None, "all", "user", "staff", "superuser", "creator"' %
-                        self.access[self.method])
+                return self.get_response_by_code(23 + SETTINGS.CODE_OFFSET, msg_append=', '.join(not_creator_pks))
+        auth_func = getattr(SETTINGS, 'USER_RIGHT_AUTHENTICATE_FUNCTION', None)
+        if not hasattr(auth_func, '__call__'):
+            raise Exception('Unknown access type %s, choices are None, "all", "user", "staff", "superuser", "creator", '
+                            'or the values of USER_RIGHT_AUTHENTICATE_FUNCTION_PATH, USER_RIGHT_AUTHENTICATE_FUNCTION '
+                            'is wrong.' % role)
+        res = auth_func(self, role)
+        if res is True:
+            return self.get_response_by_code()
+        if res is False:
+            return self.get_response_by_code(22)
+        return res
 
     @staticmethod
     def java_to_python(string):
@@ -325,19 +391,40 @@ class BenchmarkAPIView(APIView):
         return new_string
 
     def java_to_python_keys(self):
-        if SETTINGS.TRANSFER_KEYS:
-            for is_params, param_data in zip((True, False), (self.params, self.data)):
-                keys = list(param_data.keys())
-                for key in keys:
-                    if key in SETTINGS.KEYWORDS_WITH_VALUE_NEED_TRANSFER:
-                        value = param_data[key]
-                        if isinstance(value, list):
-                            for i, v in enumerate(value):
-                                value[i] = self.java_to_python(v)
+        if SETTINGS.CONVERT_KEYS and self.need_convert('request'):
+            for param_data in (self.uri_params, self.params, self.data):
+                if isinstance(param_data, dict):
+                    list_param_data = [param_data]
+                elif isinstance(param_data, (tuple, list)):
+                    list_param_data = param_data
+                else:
+                    raise Exception('data should be dict, list or tuple')
+                for pd in list_param_data:
+                    keys = list(pd.keys())
+                    for key in keys:
+                        if key in SETTINGS.KEYWORDS_WITH_VALUE_NEED_CONVERT:
+                            value = pd[key]
+                            if isinstance(value, list):
+                                for i, v in enumerate(value):
+                                    value[i] = self.java_to_python(v)
+                            else:
+                                pd[key] = self.java_to_python(value)
                         else:
-                            param_data[key] = self.java_to_python(value)
-                    else:
-                        param_data[self.java_to_python(key)] = param_data.pop(key)
+                            pd[self.java_to_python(key)] = pd.pop(key)
+
+    # If the view define the filed names of request or response need not convert between styles of java and python by
+    # the class variables that methods_not_need_convert_keys_for_request or methods_not_need_convert_keys_for_response,
+    # it return False. And the view will not convert the field names, although SETTINGS.CONVERT_KEYS is True.
+    def need_convert(self, request_response):
+        str_not_convert = 'methods_not_need_convert_keys_for_' + request_response
+        not_convert = getattr(self, str_not_convert, None)
+        if not_convert is None:
+            return True
+        if isinstance(not_convert, str):
+            not_convert = [not_convert]
+        elif not isinstance(not_convert, (tuple, list)):
+            raise Exception('the value of ' + str_not_convert + 'should be list or tuple or str')
+        return self.method not in not_convert
 
     @staticmethod
     def python_to_java(string):
@@ -365,7 +452,7 @@ class BenchmarkAPIView(APIView):
         return new_string
 
     def python_to_java_keys(self, res):
-        if SETTINGS.TRANSFER_KEYS:
+        if SETTINGS.CONVERT_KEYS and self.need_convert('response'):
             if isinstance(res, dict):
                 keys = list(res.keys())
                 for key in keys:
@@ -455,7 +542,7 @@ class BenchmarkAPIView(APIView):
                 except:
                     for key, value in request_data.items():
                         self.data[key] = value
-            elif isinstance(request_data, (list, tuple)):
+            elif self.method == 'post' and isinstance(request_data, (list, tuple)):
                 self.data = []
                 for one_request_data in request_data:
                     one_data = {}
@@ -469,33 +556,47 @@ class BenchmarkAPIView(APIView):
                         for key, value in one_request_data.items():
                             one_data[key] = value
                     self.data.append(one_data)
+            elif self.method == 'delete' and isinstance(request_data, (list, tuple)):
+                self.data = {'pk': request_data}
             else:
-                raise Exception('data should be dict, list or tuple')
+                self.get_response_by_code(25 + SETTINGS.CODE_OFFSET)
         res = self.check_request_param_data()
         if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
             return res
         pk = None
         if self.method in ('put', 'delete'):
-            if 'pk' in self.uri_params:
-                pk = self.uri_params['pk']
-            elif 'pk' in self.data:
-                pk = self.data['pk']
-        if SETTINGS.TRANSFER_KEYS:
-            self.java_to_python_keys()
+            pk = self.uri_params.get('pk')
+            if pk is None and isinstance(self.data, dict):
+                pk = self.data.get('pk')
+        res = self.check_access(pk=pk)
+        if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
+            return res
+        self.java_to_python_keys()
         self.json_to_string_keys()
-        return self.check_access(pk=pk)
+        if self.method in ('post', 'put'):
+            res = self.serializer_check(self.data)
+            if res is not None:
+                return res
+        return self.get_response_by_code()
 
     # 处理各种类型的返回
     def process_response(self, res):
         if isinstance(res, dict):    # dict 转 json 返回
             if SETTINGS.DATA_STYLE == 'dict':
-                if isinstance(res[SETTINGS.DATA], (list, dict)) and len(res[SETTINGS.DATA]) == 0:
-                    res[SETTINGS.DATA] = None
-                elif isinstance(res[SETTINGS.DATA].get(SETTINGS.RESULT, None), (list, dict)) and len(res[SETTINGS.DATA][SETTINGS.RESULT]) == 0:
-                    res[SETTINGS.DATA][SETTINGS.RESULT] = None
-            if SETTINGS.TRANSFER_KEYS:
-                self.python_to_java_keys(res)
-            return JsonResponse(res, json_dumps_params={"indent": 2})
+                if res[SETTINGS.DATA] is not None:
+                    if isinstance(res[SETTINGS.DATA], (list, dict)) and len(res[SETTINGS.DATA]) == 0:
+                        res[SETTINGS.DATA] = None
+                    elif isinstance(res[SETTINGS.DATA].get(SETTINGS.RESULT, None), (list, dict)) and len(res[SETTINGS.DATA][SETTINGS.RESULT]) == 0:
+                        res[SETTINGS.DATA][SETTINGS.RESULT] = None
+            self.python_to_java_keys(res)
+            # process json response class
+            json_response_class = getattr(SETTINGS, 'JSON_RESPONSE_CLASS', None)
+            if json_response_class == 'rest_framework.response.Response':
+                res = Response(res)
+            elif json_response_class == 'django.http.JsonResponse':
+                res = JsonResponse(res, json_dumps_params={"indent": 2})
+            else:
+                raise Exception('JSON_RESPONSE_CLASS in the benchmark_settings is not defined or not correct. The value of it should be "rest_framework.response.Response", or "django.http.JsonResponse"')
         if isinstance(res, (StreamingHttpResponse, django.http.response.HttpResponse)):    # 流文件, 或已处理好的 http 响应
             return res
         raise Exception('unknown response type: %s' % type(res))

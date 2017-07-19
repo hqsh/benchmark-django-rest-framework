@@ -14,7 +14,12 @@ SUCCESS_CODE = 0   # the only one success code value
 CODE_OFFSET = 0    # the offset of error codes defined by this framework
 MSG = 'msg'        # the error message field name
 DATA = 'data'      # the data field name
-SUCCESS_COUNT = 'success_count'    # insert success count field name when data of http post request is a list
+CREATED_COUNT = 'created_count'    # the field name of batch insert success count when data of http post request is a list
+DELETED_COUNT = 'deleted_count'    # the field name of batch delete success count when data of http delete request is a list
+CREATED_ITEMS = 'created'    # the field name of batch insert succeeded items
+DELETED_PKS = 'deleted'    # the field name of the primary keys of batch delete succeeded items
+FAILED_ITEMS = 'failed'    # the field name of batch insert or delete failed items
+TOTAL_COUNT = 'total_count'    # the field name of batch insert or delete total count in request
 
 # DATA_STYLE is the style of DATA field for http get response.
 # If DATA_STYLE is "list": DATA is a list including every model instances of the filter result for the models in dict format.
@@ -34,6 +39,9 @@ NEXT = 'next'
 # If OFFSET and PAGE are in request parameters, the value of PREVIOUS is the previous page url.
 # Otherwise or no previous page, the value is null.
 PREVIOUS = 'previous'
+
+# The type of http json response, choices are "rest_framework.response.Response" or "django.http.JsonResponse"
+JSON_RESPONSE_CLASS = 'django.http.JsonResponse'
 
 # The http response json format
 # The error codes which smaller than 200 before added by CODE_OFFSET is defined by the framework.
@@ -65,8 +73,10 @@ DICT_RESPONSE_BY_CODE = {
     '20': {MSG: 'request parameters are not valid'},
     '21': {MSG: 'anonymous user cannot access this api, should login first'},
     '22': {MSG: 'user haven\'t the right to access this api'},
-    '23': {MSG: 'user are not the creator of the pk: '},
+    '23': {MSG: 'user is not the creator of the data with primary key: '},
     '24': {MSG: 'the name of request parameter is not correct: '},
+    '25': {MSG: 'request data in http body should be dict, if http method is post, dicts in list is also applied'},
+    '26': {MSG: 'batch delete failed, the reasons are: '},
     '100': {MSG: 'login failed'},
 }
 
@@ -99,6 +109,9 @@ def GET_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None, msg_append=None
 def GET_HTTP_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None):
     return JsonResponse(GET_RESPONSE_BY_CODE(code, msg, data), json_dumps_params={"indent": 2})
 
+
+# The parent class which BenchmarkAPIView extends from. Choice is "APIView", "GenericAPIView" or "ViewSet".
+PARENT_VIEW = 'ViewSet'
 
 # The params (in urls) should be exist of http requests.
 DICT_CHECK_PARAMS = {
@@ -192,8 +205,18 @@ USING = 'using'
 # each undefined access of method
 ACCESS = 'access'
 
+# Custom function for user right authentication.
+# The function should be static method, class method of a class in the file, or just a function not in any class.
+# The inputs of the function are user and role. And the outputs of it are True, False or the return value from
+# get_response_by_code function in BenchmarkApiView.
+USER_RIGHT_AUTHENTICATE_FUNCTION = None
+
 # The keyword of django model primary key.
 MODEL_PRIMARY_KEY = 'pk'
+
+# The configuration of whether use MODEL_PRIMARY_KEY when http post method (True),
+# or use the primary key name of models.
+USE_MODEL_PRIMARY_KEY = False
 
 # When some models use delete flag, the http delete requests don't delete the items of models, but they set the
 # delete flag to "True" value. And we should set the delete flag name of the fields as the value of MODEL_DELETE_FLAG.
@@ -255,9 +278,9 @@ OMIT_UN_EDITABLE_FIELDS = False
 
 # The configuration of whether to transform keys of the params or data of the request or response
 # between the style of python and java.
-# For example, transform employeeName to employee_name after BenchmarkApiView receive request.
-# Conversely, transform employee_name to employeeName before BenchmarkApiView return response.
-TRANSFER_KEYS = False
+# For example, convert employeeName to employee_name after BenchmarkApiView receive request.
+# Conversely, convert employee_name to employeeName before BenchmarkApiView return response.
+CONVERT_KEYS = False
 
 '''
 
