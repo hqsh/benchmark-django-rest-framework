@@ -656,7 +656,6 @@ class BenchmarkModel(object):
                             failed_items.append(data)
                             if res[SETTINGS.MSG] not in msgs:
                                 msgs.append(res[SETTINGS.MSG])
-
                     data_ = {}
                     for key, value in data.items():
                         if isinstance(value, list):
