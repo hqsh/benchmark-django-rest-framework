@@ -110,8 +110,8 @@ def GET_HTTP_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None):
     return JsonResponse(GET_RESPONSE_BY_CODE(code, msg, data), json_dumps_params={"indent": 2})
 
 
-# The parent class which BenchmarkAPIView extends from. Choice is "APIView", "GenericAPIView" or "ViewSet".
-PARENT_VIEW = 'ViewSet'
+# The parent class which BenchmarkAPIView extends from. Choice is "APIView", "GenericAPIView", "ViewSet" or "ModelViewSet".
+PARENT_VIEW = 'ModelViewSet'
 
 # The params (in urls) should be exist of http requests.
 DICT_CHECK_PARAMS = {
@@ -142,6 +142,7 @@ SELECT_RELATED = 'select_related'
 # The keyword for filter the http get response data fields. If one request has several model field names to filter,
 # list them in a list. If the request need a black list for filter (default is white list), add "-" in the front of
 # the value of this parameter.
+# 只支持一层, 待废弃. 推荐用 values_fields, 支持多层
 VALUES = 'values'
 
 # The keyword of the begin position of http get response data.

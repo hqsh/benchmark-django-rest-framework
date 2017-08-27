@@ -6,7 +6,7 @@ import textwrap
 
 setup(
     name='benchmark-django-rest-framework',
-    version='1.0.1',
+    version='1.1.0',
     url='https://github.com/hqsh/benchmark-django-rest-framework',
     author='Huang Qiangsheng',
     author_email='hqsh@live.cn',

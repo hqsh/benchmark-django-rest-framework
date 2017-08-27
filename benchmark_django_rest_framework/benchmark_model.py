@@ -94,9 +94,7 @@ class BenchmarkModel(object):
             for key, value in params.items():
                 if key not in [SETTINGS.ORDER_BY, SETTINGS.OFFSET, SETTINGS.LIMIT, SETTINGS.PAGE]:
                     model_filter[key] = value
-        if query_set is not None and len(model_filter) == 0:
-            pass
-        elif query_set is None and len(model_filter) == 0:
+        if query_set is None and len(model_filter) == 0:
             query_set = cls.objects.using(using).filter(**model_filter)
         elif query_set is None and len(model_filter) > 0:
             try:
@@ -109,7 +107,7 @@ class BenchmarkModel(object):
                     return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
             except Exception as e:
                 return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
-        else:
+        elif not(query_set is not None and len(model_filter) == 0):
             query_set = query_set.using(using).filter(**model_filter)
         if Qs is not None:
             list_q = []
@@ -171,12 +169,17 @@ class BenchmarkModel(object):
         return data
 
     @classmethod
-    def model_to_dict_process_many_to_many(cls, instance):
+    def model_to_dict_process_many_to_many_and_json(cls, instance):
         data = cls.model_to_dict(instance)
         for key, value in data.items():
             if isinstance(value, django.db.models.query.QuerySet):
                 many = value.all()
                 data[key] = [one.pk for one in many]
+            elif SETTINGS.MODEL_JSON_FIELD_NAMES is not None and key in SETTINGS.MODEL_JSON_FIELD_NAMES:
+                try:
+                    data[key] = json.loads(value)
+                except:
+                    pass
         return data
 
     @classmethod
@@ -457,9 +460,7 @@ class BenchmarkModel(object):
             for item in data:
                 _item = {}
                 for key, value in item.items():
-                    if key in values and values_white_list:
-                        _item[key] = value
-                    elif key not in values and not values_white_list:
+                    if (key in values and values_white_list) or (key not in values and not values_white_list):
                         _item[key] = value
                 res.append(_item)
             return res
@@ -512,7 +513,7 @@ class BenchmarkModel(object):
         return cls.get_response_by_code()
 
     @classmethod
-    def post_model(cls, data, user=None, using='default'):
+    def post_model(cls, data, user=None, using='default', serializer_is_custom=True):
         if isinstance(data, dict):
             post_data = [data]
             insert_multiple_data = False
@@ -541,7 +542,12 @@ class BenchmarkModel(object):
                     if not is_relationship_field and field.field_name == primary_key_name \
                             or is_relationship_field and field.name == primary_key_name:
                         if SETTINGS.MODEL_DELETE_FLAG is None:
-                            pass    # has checked by serializer
+                            if serializer_is_custom:    # whether pk exists may be not has checked by custom serializer
+                                field_name = getattr(field, 'field_name', None)
+                                if field_name == cls._meta.pk.attname:
+                                    exist_item = cls.objects.using(using).filter(pk=value).first()
+                                    if exist_item is not None:
+                                        return cls.get_response_by_code(4 + SETTINGS.CODE_OFFSET)
                         else:
                             exist_item = cls.objects.using(using).filter(pk=value).first()
                             if exist_item is not None:
@@ -626,13 +632,13 @@ class BenchmarkModel(object):
                 modifier = None
                 if user is not None:
                     if SETTINGS.MODEL_CREATOR is not None and hasattr(cls, SETTINGS.MODEL_CREATOR):
-                        if isinstance(getattr(cls, SETTINGS.MODEL_CREATOR).__class__,
+                        if isinstance(getattr(cls, SETTINGS.MODEL_CREATOR),
                                       django.db.models.fields.related_descriptors.ForwardManyToOneDescriptor):
                             creator = get_user_model().objects.get(username=user)
                         else:
                             creator = user
                     if SETTINGS.MODEL_MODIFIER is not None and hasattr(cls, SETTINGS.MODEL_MODIFIER):
-                        if isinstance(getattr(cls, SETTINGS.MODEL_MODIFIER).__class__,
+                        if isinstance(getattr(cls, SETTINGS.MODEL_MODIFIER),
                                       django.db.models.fields.related_descriptors.ForwardManyToOneDescriptor):
                             modifier = get_user_model().objects.get(username=user)
                         else:
@@ -646,7 +652,7 @@ class BenchmarkModel(object):
                             setattr(exist_item, SETTINGS.MODEL_MODIFIER, modifier)
                         exist_item.save(using=using)
                         created_count += 1
-                        created_items.append(cls.model_to_dict(exist_item))
+                        created_items.append(cls.model_to_dict_process_many_to_many_and_json(exist_item))
                 except django.db.utils.IntegrityError as e:
                     if hasattr(e, 'args'):
                         if e.args[0] == 1048 or e.args[0].startswith('NOT NULL constraint failed: '):    # field cannot be None (很可能还有其他类型的错误, 待增加)
@@ -676,7 +682,7 @@ class BenchmarkModel(object):
                         setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
                     exist_item.save(using=using)
                     created_count += 1
-                    created_items.append(cls.model_to_dict(exist_item))
+                    created_items.append(cls.model_to_dict_process_many_to_many_and_json(exist_item))
                 for key, value in many_to_many_relations.items():
                     if isinstance(value, list):
                         values = value
@@ -695,7 +701,7 @@ class BenchmarkModel(object):
                         setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
                     exist_item.save(using=using)
                     created_count += 1
-                    created_items.append(cls.model_to_dict(exist_item))
+                    created_items.append(cls.model_to_dict_process_many_to_many_and_json(exist_item))
                 except Exception as e:
                     print(traceback.format_exc())
                     res = cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
@@ -706,7 +712,7 @@ class BenchmarkModel(object):
                         msgs.append(res[SETTINGS.MSG])
             if not insert_multiple_data:
                 res = cls.get_response_by_code(SETTINGS.SUCCESS_CODE, msg_append=foreign_key_does_not_exist_msg,
-                                               data=cls.model_to_dict_process_many_to_many(exist_item))
+                                               data=cls.model_to_dict_process_many_to_many_and_json(exist_item))
                 return res
         data = {SETTINGS.TOTAL_COUNT: total_count, SETTINGS.CREATED_COUNT: created_count,
                 SETTINGS.FAILED_ITEMS: failed_items, SETTINGS.CREATED_ITEMS: created_items}
@@ -772,7 +778,7 @@ class BenchmarkModel(object):
         except Exception as e:
             print(traceback.format_exc())
             return cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
-        return cls.get_response_by_code(data=cls.model_to_dict_process_many_to_many(m))
+        return cls.get_response_by_code(data=cls.model_to_dict_process_many_to_many_and_json(m))
 
     @classmethod
     def delete_related_models(cls, m=None, pk=None, delete_flag=True, user=None, modifier=None, delete_time=None,
