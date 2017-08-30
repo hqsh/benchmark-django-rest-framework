@@ -86,7 +86,16 @@ class BenchmarkModel(object):
             dict_item[key] = cls.get_json(key, value)
 
     @classmethod
-    def filter_model(cls, params=None, query_set=None, select_related=None, Qs=None, using='default'):
+    def get_first_or_last(cls, query_set, first=False, last=False):
+        if first:
+            query_set = [query_set.first()]
+        elif last:
+            query_set = [query_set.last()]
+        return query_set
+
+    @classmethod
+    def filter_model(cls, params=None, query_set=None, select_related=None, Qs=None, using='default', first=False,
+                     last=False, order_by=None):
         model_filter = {}
         if SETTINGS.MODEL_DELETE_FLAG is not None:
             model_filter[SETTINGS.MODEL_DELETE_FLAG] = 0
@@ -121,13 +130,17 @@ class BenchmarkModel(object):
                 list_q.append(_several_q)
             for q in list_q:
                 query_set = query_set.using(using).filter(q)
-        if params is not None and SETTINGS.ORDER_BY in params:
+        if order_by is not None:
+            if hasattr(cls, order_by):
+                query_set = query_set.order_by(order_by)
+        elif params is not None and SETTINGS.ORDER_BY in params:
             order_by_field_name = params[SETTINGS.ORDER_BY] if params[SETTINGS.ORDER_BY][0] != '-' else params[SETTINGS.ORDER_BY][1:]
             if hasattr(cls, order_by_field_name):
                 query_set = query_set.order_by(params[SETTINGS.ORDER_BY])
         if select_related is not None:
             for field in select_related:
                 query_set = query_set.select_related(field)
+        query_set = cls.get_first_or_last(query_set, first, last)
         return query_set
 
     @classmethod
@@ -165,12 +178,15 @@ class BenchmarkModel(object):
                 continue
             if exclude and f.name in exclude:
                 continue
-            data[f.name] = f.value_from_object(instance)
+            value = f.value_from_object(instance)
+            if f.get_internal_type() == 'DateTimeField':
+                value = str(value)
+            data[f.name] = value
         return data
 
     @classmethod
-    def model_to_dict_process_many_to_many_and_json(cls, instance):
-        data = cls.model_to_dict(instance)
+    def model_to_dict_process_many_to_many_and_json(cls, instance, fields=None, exclude=None):
+        data = cls.model_to_dict(instance, fields, exclude)
         for key, value in data.items():
             if isinstance(value, django.db.models.query.QuerySet):
                 many = value.all()
@@ -181,6 +197,14 @@ class BenchmarkModel(object):
                 except:
                     pass
         return data
+
+    @classmethod
+    def query_set_to_list_process_many_to_many_and_json(cls, query_set, fields=None, exclude=None):
+        list_data = []
+        for instance in query_set:
+            data = cls.model_to_dict_process_many_to_many_and_json(instance, fields, exclude)
+            list_data.append(data)
+        return list_data
 
     @classmethod
     def get_select_related(cls, query_set, select_related_fields, list_data):
@@ -261,7 +285,8 @@ class BenchmarkModel(object):
         return None
 
     @classmethod
-    def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None, using='default'):
+    def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None,
+                  using='default', first=False, last=False, order_by=None):
         res = cls.check_params(params)
         if res is not None:
             return res
@@ -269,7 +294,7 @@ class BenchmarkModel(object):
         relates_keys = []    # relates, 为避免重复的统计进去
         level_relates = []
         list_data = []
-        query_set = cls.filter_model(params, query_set, Qs=Qs, using=using)
+        query_set = cls.filter_model(params, query_set, Qs=Qs, using=using, first=first, last=last, order_by=order_by)
         if SETTINGS.PAGE not in params.keys():
             try:
                 offset = int(params[SETTINGS.OFFSET])

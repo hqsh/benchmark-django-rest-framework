@@ -76,7 +76,7 @@ class BenchmarkAPIView(PARENT_VIEW):
             else:
                 cls.view_not_support_methods = ()
         cls.values_white_list = getattr(cls, 'values_white_list', True)
-        if not hasattr(cls, SETTINGS.VALUES_FIELDS):
+        if not hasattr(cls, 'values_fields'):
             cls.values_fields = {}
         cls.values_fields_in_data = {}
         cls.values_fields_in_data_results = {}
@@ -90,11 +90,11 @@ class BenchmarkAPIView(PARENT_VIEW):
         for key, value in cls.rename_fields.items():
             cls.rename_fields_in_data['/' + SETTINGS.DATA + key] = value
             cls.rename_fields_in_data_results['/' + SETTINGS.DATA + '/' + SETTINGS.RESULT + key] = value
+        cls.http_get_check_params = getattr(cls, 'http_get_check_params', False)
         cls.using = getattr(cls, SETTINGS.USING, 'default')
         cls.logger = Logger()
         cls.init_access()
         cls.init_serializer()
-        cls.http_get_check_params = True
         cls.is_ready = True
 
     def __init__(self):
@@ -118,6 +118,7 @@ class BenchmarkAPIView(PARENT_VIEW):
         self.values_white_list = getattr(self, 'values_white_list', True)
         self.Qs = getattr(self, 'Qs', None)
         self.pk = None
+        self.get_one = None
 
     @classmethod
     def init_serializer(cls):
@@ -547,9 +548,12 @@ class BenchmarkAPIView(PARENT_VIEW):
                 else:
                     values_fields = self.values_fields_in_data
                     rename_fields = self.rename_fields_in_data
-                if path in values_fields and (self.values_white_list and key not in values_fields[path] or
-                                                      not self.values_white_list and key in values_fields[path]):
+                if path in values_fields and (
+                        (self.values_white_list and key not in values_fields[path]) or
+                        (not self.values_white_list and key in values_fields[path])
+                ):
                     del res[key]
+                    continue
                 if path in rename_fields and key in rename_fields[path]:
                     new_key = rename_fields[path][key]
                     res[new_key] = res.pop(key)
@@ -672,23 +676,25 @@ class BenchmarkAPIView(PARENT_VIEW):
 
     # 处理各种类型的返回
     def process_response(self, res):
+        data = res.get(SETTINGS.DATA, None)
         if isinstance(res, dict):    # dict 转 json 返回
             if SETTINGS.DATA_STYLE == 'dict':
-                if res.get(SETTINGS.DATA, None) is not None:
+                if data is not None:
                     if isinstance(res[SETTINGS.DATA], (list, dict)) and len(res[SETTINGS.DATA]) == 0:
                         res[SETTINGS.DATA] = None
                     elif isinstance(res[SETTINGS.DATA].get(SETTINGS.RESULT, None), (list, dict)) and len(res[SETTINGS.DATA][SETTINGS.RESULT]) == 0:
                         res[SETTINGS.DATA][SETTINGS.RESULT] = None
-            if self.method == 'get':
-                path = '/'
-                if SETTINGS.RESULT in res[SETTINGS.DATA]:
-                    has_result_field = True
+            if data is not None and len(data) > 0:
+                if self.method == 'get':
+                    path = '/'
+                    if SETTINGS.RESULT in res[SETTINGS.DATA]:
+                        has_result_field = True
+                    else:
+                        has_result_field = False
                 else:
-                    has_result_field = False
-            else:
-                path = None
-                has_result_field = None
-            self.process_keys(res, path, has_result_field)
+                    path = None
+                    has_result_field = None
+                self.process_keys(res, path, has_result_field)
 
             # process json response class
             json_response_class = getattr(SETTINGS, 'JSON_RESPONSE_CLASS', None)
@@ -705,8 +711,10 @@ class BenchmarkAPIView(PARENT_VIEW):
     # 处理 style 2 的 get 请求分页
     def paginate(self, res):
         if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE and SETTINGS.DATA_STYLE == 'dict':
+            if isinstance(res[SETTINGS.DATA], dict):
+                res[SETTINGS.DATA] = [res[SETTINGS.DATA]]
             # get one
-            if 'pk' in self.uri_params.keys():
+            if self.get_one is None and 'pk' in self.uri_params.keys() or self.get_one:
                 if len(res[SETTINGS.DATA]) == 0:
                     res[SETTINGS.DATA] = None
                 else:
