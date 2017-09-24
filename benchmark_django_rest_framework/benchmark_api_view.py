@@ -3,6 +3,7 @@
 from django.http import JsonResponse, StreamingHttpResponse
 from django.utils.decorators import classonlymethod
 from django_filters import rest_framework as filters
+from rest_framework import status
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.serializers import ModelSerializer, Serializer
@@ -51,55 +52,75 @@ else:
 
 class BenchmarkAPIView(PARENT_VIEW):
 
-    @classmethod
+    @classonlymethod
     def init(cls):
-        view_name = cls.__name__
-        if not hasattr(cls, 'check_params'):
-            if view_name in SETTINGS.DICT_CHECK_PARAMS.keys():
-                cls.check_params = SETTINGS.DICT_CHECK_PARAMS[view_name]
-            else:
-                cls.check_params = {'get': (), 'post': (), 'put': (), 'delete': ()}
-        if not hasattr(cls, 'check_data'):
-            if view_name in SETTINGS.DICT_CHECK_DATA.keys():
-                cls.check_data = SETTINGS.DICT_CHECK_DATA[view_name]
-            else:
-                cls.check_data = {'get': (), 'post': (), 'put': (), 'delete': ()}
+        # Each value of settings as follow is got from class variable (in lowercase) in each view firstly. If it is not
+        # defined in class variable, then it is got from the global variable (in uppercase) in benchmark_settings.py
+        # secondly. If it is not defined in benchmark_settings.py, then set it as default value.
+        # The descriptions of these settings are in benchmark_settings.py.
+        for setting, default_value in (
+            ('data_style', 'dict'),
+            ('omit_underlines', True),
+            ('rename_params', {}),
+            ('rename_uri_params', {}),
+            ('rename_data', {}),
+            ('rename_fields', {}),
+            ('http_get_check_params', False),   # whether check params in http get request by serializer
+            ('serializer_use_benchmark_code', True),    # whether serializer use benchmark code and return the error response
+            ('enable_select_related_in_params', False),
+        ):
+            if not hasattr(cls, setting):
+                setattr(cls, setting, getattr(SETTINGS, setting.upper(), default_value))
+        # Each value of settings as follow is got from class variable (in lowercase) in each view firstly. If it is not
+        # defined in class variable, then set it as default value.
+        for setting, default_value in (
+            ('primary_model', None),       # primary model
+            ('using', 'default'),          # the database name of primary model
+            ('access', {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'}),    # access right for api
+            ('select_related', None),      # http get request search data in multiple models
+            ('values', None),              # This setting filter for response data fields, similar to django model
+                                           # "values" function. It supports only the first level fields, and it
+                                           # supports to set in http get request params.
+            ('values_fields', {}),         # This setting filter for response data fields, similar to django model
+                                           # "values" function. It supports multiple level fields.
+            ('values_white_list', True),   # whether the field names in values_fields is in white list
+            ('get_one', None),             # When "pk" is not in uri, data field in response is a list by default.
+                                           # If set "get_one" to "True", data field in response is a dict as the first
+                                           # item in the list if the request has search results.
+                                           # When "pk" is in uri, data field in response is a list by dict. If set
+                                           # "get_one" to "False", data field in response are several dicts within a
+                                           # list.
+            ('methods_not_need_convert_keys_for_request', None),
+            ('methods_not_need_convert_keys_for_response', None),
+            ('check_params', {'get': (), 'post': (), 'put': (), 'delete': ()}),    # check params exist in request
+            ('check_data', {'get': (), 'post': (), 'put': (), 'delete': ()}),      # check data exist in request
+            ('enabled_select_related_in_params', []),       # If enable_select_related_in_params is True, this variable
+                                                            # defines which select_related strings can be accepted.
+        ):
+            if not hasattr(cls, setting):
+                setattr(cls, setting, default_value)
+        # more steps for initiate some settings
+        for method in {'get', 'post', 'put', 'delete'} - set(cls.access.keys()):
+            cls.access[method] = None
         for check in (cls.check_params, cls.check_data):
             for method in ('get', 'post', 'put', 'delete'):
                 if method not in check.keys():
                     check[method] = ()
-        if not hasattr(cls, 'primary_model'):
-            cls.primary_model = None
-        if not hasattr(cls, 'view_not_support_methods'):
-            if view_name in SETTINGS.DICT_VIEW_NOT_SUPPORT_METHODS.keys():
-                cls.view_not_support_methods = SETTINGS.DICT_VIEW_NOT_SUPPORT_METHODS[view_name]
-            else:
-                cls.view_not_support_methods = ()
-        cls.values_white_list = getattr(cls, 'values_white_list', True)
-        if not hasattr(cls, 'values_fields'):
-            cls.values_fields = {}
         cls.values_fields_in_data = {}
         cls.values_fields_in_data_results = {}
         for key, value in cls.values_fields.items():
             cls.values_fields_in_data['/' + SETTINGS.DATA + key] = value
             cls.values_fields_in_data_results['/' + SETTINGS.DATA + '/' + SETTINGS.RESULT + key] = value
-        if not hasattr(cls, 'rename_fields'):
-            cls.rename_fields = {}
         cls.rename_fields_in_data = {}
         cls.rename_fields_in_data_results = {}
         for key, value in cls.rename_fields.items():
             cls.rename_fields_in_data['/' + SETTINGS.DATA + key] = value
             cls.rename_fields_in_data_results['/' + SETTINGS.DATA + '/' + SETTINGS.RESULT + key] = value
-        cls.http_get_check_params = getattr(cls, 'http_get_check_params', False)
-        cls.using = getattr(cls, SETTINGS.USING, 'default')
+        # other initial steps
         cls.logger = Logger()
-        cls.init_access()
         cls.init_serializer()
-        cls.is_ready = True
 
     def __init__(self):
-        if not hasattr(self, 'is_ready'):
-            self.__class__.init()
         super(BenchmarkAPIView, self).__init__()
         self.request = None
         self.params = {}
@@ -118,7 +139,6 @@ class BenchmarkAPIView(PARENT_VIEW):
         self.values_white_list = getattr(self, 'values_white_list', True)
         self.Qs = getattr(self, 'Qs', None)
         self.pk = None
-        self.get_one = None
 
     @classmethod
     def init_serializer(cls):
@@ -156,12 +176,13 @@ class BenchmarkAPIView(PARENT_VIEW):
 
     @classmethod
     def init_access(cls):
-        cls.access = getattr(cls, SETTINGS.ACCESS, {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'})
+        cls.access = getattr(cls, 'access', {'get': 'all', 'post': 'all', 'put': 'all', 'delete': 'all'})
         for method in {'get', 'post', 'put', 'delete'} - set(cls.access.keys()):
             cls.access[method] = 'all'
 
     @classonlymethod
     def as_view(cls, actions=None, **initkwargs):
+        cls.init()
         cls.list = cls.get
         cls.create = cls.post
         cls.retrieve = cls.get
@@ -172,7 +193,6 @@ class BenchmarkAPIView(PARENT_VIEW):
             if actions is None:
                 has_pk = initkwargs.get('has_pk', False)
                 actions = dict()
-                cls.init_access()
                 if cls.access['get'] is not None:
                     if has_pk:
                         actions['get'] = 'retrieve'
@@ -193,7 +213,7 @@ class BenchmarkAPIView(PARENT_VIEW):
                             fields = '__all__'
                     if cls.need_convert('request', 'get'):
                         for field in BenchmarkFilter.get_fields():
-                            BenchmarkFilter.base_filters[cls.python_to_java(field)] \
+                            BenchmarkFilter.base_filters[cls.python_to_java(field, getattr(SETTINGS, 'OMIT_UNDERLINES', True))] \
                                 = BenchmarkFilter.base_filters.pop(field)
                     cls.filter_class = BenchmarkFilter
             return super().as_view(actions=actions)
@@ -311,12 +331,23 @@ class BenchmarkAPIView(PARENT_VIEW):
             try:
                 serializer.is_valid(raise_exception=True)
             except rest_framework.exceptions.ValidationError as e:
+                if self.serializer_use_benchmark_code:
+                    dict_codes = e.get_codes()
+                    if len(dict_codes) > 0:
+                        _, codes = dict_codes.popitem()
+                        if isinstance(codes, list) and len(codes) > 0:
+                            code = codes[0]
+                            if isinstance(code, int):
+                                res = self.get_response_by_code(code)
+                                if isinstance(res[SETTINGS.MSG], dict) and 'detail' not in res[SETTINGS.MSG]:
+                                    res[SETTINGS.MSG]['detail'] = 'request parameters are not valid'
+                                return res
                 exception_detail = {}
                 for key, errors in e.detail.items():
-                    # partial 为 True 时, 令 required=True 不检查, 但对 get 请求无效, 暂时只能对捕获后的异常处理
-                    if self.method == 'get':
+                    # partial 为 True 时, 令 required=True 不检查, 但对 get 和 pk 不存在的 put 请求无效, 暂时只能对捕获后的异常处理
+                    if self.method in ('get', 'put'):
                         for error in errors:
-                            if SETTINGS.MODEL_DELETE_FLAG is None and error == 'This field is required.':
+                            if error == 'This field is required.':
                                 errors.remove(error)
                     if len(errors) != 0:
                         exception_detail[key] = errors
@@ -388,8 +419,8 @@ class BenchmarkAPIView(PARENT_VIEW):
             return self.get_response_by_code(21 + SETTINGS.CODE_OFFSET)
         if 'user' in roles:    # login user can access
             return self.get_response_by_code()
-        if 'staff' in roles:    # staff or admin can access
-            return self.get_response_by_code() if self.user.is_staff or self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
+        if 'staff' in roles:    # staff can access
+            return self.get_response_by_code() if self.user.is_staff else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
         if 'superuser' in roles:    # superuser can access
             return self.get_response_by_code() if self.user.is_superuser else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
         if 'creator' in roles:    # creator or admin can access put or delete method
@@ -462,6 +493,14 @@ class BenchmarkAPIView(PARENT_VIEW):
             if self.method == 'get' and SETTINGS.ORDER_BY in self.params:
                 self.params[SETTINGS.ORDER_BY] = self.java_to_python(self.params[SETTINGS.ORDER_BY])
 
+    # rename input keys in http request
+    def rename_input_keys(self):
+        for str_input in ('uri_params', 'params', 'data'):
+            input = getattr(self, str_input)
+            rename_dict = getattr(self, 'rename_' + str_input)
+            for key, new_key in rename_dict.items():
+                input[new_key] = input.pop(key)
+
     # If the view define the filed names of request or response need not convert between styles of java and python by
     # the class variables that methods_not_need_convert_keys_for_request or methods_not_need_convert_keys_for_response,
     # it return False. And the view will not convert the field names, although SETTINGS.CONVERT_KEYS is True.
@@ -478,11 +517,13 @@ class BenchmarkAPIView(PARENT_VIEW):
         return method not in not_convert
 
     @staticmethod
-    def python_to_java(string):
+    def python_to_java(string, omit_underlines=True):
         new_string = ''
         to_upper = False
         for i, alphabet in enumerate(string):
             if to_upper:
+                if omit_underlines and alphabet == '_':
+                    continue
                 if alphabet.islower():
                     new_string = new_string + alphabet.upper()
                 else:
@@ -491,11 +532,17 @@ class BenchmarkAPIView(PARENT_VIEW):
             elif alphabet == '_':
                 if i + 1 < len(string):
                     if string[i + 1] == '_':
-                        new_string = new_string + alphabet
+                        if omit_underlines:
+                            to_upper = True
+                        else:
+                            new_string = new_string + alphabet
                         continue
                 if i - 1 > 0:
                     if string[i - 1] == '_':
-                        new_string = new_string + alphabet
+                        if omit_underlines:
+                            to_upper = True
+                        else:
+                            new_string = new_string + alphabet
                         continue
                 to_upper = True
             else:
@@ -509,7 +556,7 @@ class BenchmarkAPIView(PARENT_VIEW):
                 for key in keys:
                     if isinstance(res[key], (dict, list)):
                         self.python_to_java_keys(res[key])
-                    new_key = self.python_to_java(key)
+                    new_key = self.python_to_java(key, self.omit_underlines)
                     if key != new_key:
                         res[new_key] = res.pop(key)
             elif isinstance(res, list):
@@ -557,14 +604,11 @@ class BenchmarkAPIView(PARENT_VIEW):
                 if path in rename_fields and key in rename_fields[path]:
                     new_key = rename_fields[path][key]
                     res[new_key] = res.pop(key)
-                    key = new_key
-                if need_python_to_java:
-                    new_key = self.python_to_java(key)
-                    if key != new_key:
-                        res[new_key] = res.pop(key)
         elif isinstance(res, list):
             for item in res:
                 self.process_keys(item, path, has_result_field)
+        if need_python_to_java:
+            self.python_to_java_keys(res)
 
     # 处理各种请求的入口，解析各字段并进行处理
     def begin(self, request, uri_params={}):
@@ -574,8 +618,6 @@ class BenchmarkAPIView(PARENT_VIEW):
         self.path = request.path
         self.method = request.method.lower()
         self.file = request.FILES.get(SETTINGS.FILE, None)
-        if self.method in self.view_not_support_methods:
-            return self.get_response_by_code(3 + SETTINGS.CODE_OFFSET)
         self.params = {}
         for key, value in request.GET.items():
             len_value = len(value)
@@ -587,11 +629,7 @@ class BenchmarkAPIView(PARENT_VIEW):
             elif key == SETTINGS.VALUES and len_value > 2 and value[0] == '-':
                 self.values_white_list = False
                 value = value[1:].split(',')
-            if key == SETTINGS.SELECT_RELATED:
-                if isinstance(value, str):
-                    value = [value]
-                self.select_related = value
-            elif key == SETTINGS.VALUES:
+            if key == SETTINGS.VALUES:
                 if isinstance(value, str):
                     value = [value]
                 self.values = value
@@ -663,6 +701,7 @@ class BenchmarkAPIView(PARENT_VIEW):
         if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
             return res
         self.java_to_python_keys()
+        self.rename_input_keys()
         self.json_to_string_keys()
         if self.method in ('post', 'put') or (self.method == 'get' and self.http_get_check_params):
             if self.method == 'get':
@@ -672,6 +711,17 @@ class BenchmarkAPIView(PARENT_VIEW):
             res = self.serializer_check(data)
             if res is not None:
                 return res
+        if hasattr(self.params, SETTINGS.SELECT_RELATED):
+            select_related = self.params.pop(SETTINGS.SELECT_RELATED)
+            if self.enable_select_related_in_params:
+                if isinstance(select_related, str):
+                    select_related = [select_related]
+                if self.enabled_select_related_in_params == '__all__':
+                    self.select_related = select_related
+                else:
+                    self.select_related = list(
+                        set(self.enabled_select_related_in_params) & set(getattr(self.params, SETTINGS.SELECT_RELATED, []))
+                    )
         return self.get_response_by_code()
 
     # 处理各种类型的返回

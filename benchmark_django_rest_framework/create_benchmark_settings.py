@@ -3,8 +3,8 @@ import os
 
 init_data = '''\
 # -*- coding:utf-8 -*-
-
 from django.http import JsonResponse
+from rest_framework.response import Response
 import copy
 
 
@@ -80,6 +80,14 @@ DICT_RESPONSE_BY_CODE = {
     '100': {MSG: 'login failed'},
 }
 
+# The custom http response json
+DICT_CUSTOM_RESPONSE_BY_CODE = {
+    '400': {MSG: 'Bad Request'},
+    '404': {MSG: 'Not Found'},
+    '500': {MSG: 'Internal Server Error'},
+}
+
+DICT_RESPONSE_BY_CODE.update(DICT_CUSTOM_RESPONSE_BY_CODE)
 for _code, _res in DICT_RESPONSE_BY_CODE.items():
     if int(_code) < 200:
         _res[CODE] = int(_code) + CODE_OFFSET
@@ -107,42 +115,43 @@ def GET_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None, msg_append=None
 
 
 def GET_HTTP_RESPONSE_BY_CODE(code=SUCCESS_CODE, msg=None, data=None):
-    return JsonResponse(GET_RESPONSE_BY_CODE(code, msg, data), json_dumps_params={"indent": 2})
+    if JSON_RESPONSE_CLASS == "django.http.JsonResponse":
+        return JsonResponse(GET_RESPONSE_BY_CODE(code, msg, data), json_dumps_params={"indent": 2})
+    else:
+        return Response(GET_RESPONSE_BY_CODE(code, msg, data))
 
 
 # The parent class which BenchmarkAPIView extends from. Choice is "APIView", "GenericAPIView", "ViewSet" or "ModelViewSet".
 PARENT_VIEW = 'ModelViewSet'
 
 # The params (in urls) should be exist of http requests.
-DICT_CHECK_PARAMS = {
+CHECK_PARAMS = {
     # # The format is as follow, view names, http methods, field names, for example:
     # 'CompanyView': {
     #     'get': ('company_name', ),
     # }
 }
 
+# 待废弃, 用序列化
 # The data (in request bodies) should be exist of http requests.
-DICT_CHECK_DATA = {
+CHECK_DATA = {
     # # The format is as follow, view names, http methods, field names, for example:
     # 'CompanyView': {
     #     'post': ('company_id', 'company_name'),
     # }
 }
 
-# The not supported methods of the APIs
-DICT_VIEW_NOT_SUPPORT_METHODS = {
-    # # The format is as follow, view names, http methods, for example:
-    # 'CompanyView': ('delete', ),
-}
-
 # The keyword of relation field names in models for searching multiple models in http get requests.
 # If one request has several related field branches, list them in a list.
 SELECT_RELATED = 'select_related'
 
+# Whether enable SELECT_RELATED in http get params. For security consideration, it is recommended to set to False.
+ENABLE_SELECT_RELATED_IN_PARAMS = False
+
 # The keyword for filter the http get response data fields. If one request has several model field names to filter,
 # list them in a list. If the request need a black list for filter (default is white list), add "-" in the front of
 # the value of this parameter.
-# 只支持一层, 待废弃. 推荐用 values_fields, 支持多层
+# 只支持一层, 但支持请求参数中用，用 values_fields, 支持多层
 VALUES = 'values'
 
 # The keyword of the begin position of http get response data.
@@ -187,7 +196,7 @@ FILE = 'file'
 
 # The class variable name of sub-class of BenchmarkApiView for using django multiple databases.
 # The choice of value of this variable can be the DATABASES.keys() defined in django "settings.py" file.
-USING = 'using'
+# USING = 'using'
 
 # The class variable name of sub-class of BenchmarkApiView for api access authorization.
 # The value of this variable is a dict as follow:
@@ -204,7 +213,7 @@ USING = 'using'
 #            so the post method of the same api should be 'user', 'staff' or 'superuser'.
 #            and the variable name of the creator in all models is defined in MODEL_CREATOR.
 # each undefined access of method
-ACCESS = 'access'
+# ACCESS = 'access'
 
 # Custom function for user right authentication.
 # The function should be static method, class method of a class in the file, or just a function not in any class.
@@ -217,14 +226,7 @@ MODEL_PRIMARY_KEY = 'pk'
 
 # The configuration of whether use MODEL_PRIMARY_KEY when http post method (True),
 # or use the primary key name of models.
-USE_MODEL_PRIMARY_KEY = False
-
-# When some models use delete flag, the http delete requests don't delete the items of models, but they set the
-# delete flag to "True" value. And we should set the delete flag name of the fields as the value of MODEL_DELETE_FLAG.
-# If we don't use the delete flag in every models, we just set the value of MODEL_DELETE_FLAG "None".
-# 是否使用删除标记位(delete请求不删除数据库表中数据, 而是修改标记位字段). 若使用, 则为删除标记位字段名;
-# 若不使用, 则为 None; 可以支持部分 model 使用删除标记位, 其余 model 不使用
-MODEL_DELETE_FLAG = None             # 'delete flag'
+# USE_MODEL_PRIMARY_KEY = False
 
 # The name of the fields in models which defined as "models.DateTimeField(auto_now_add=True)"
 # If haven't these fields, to set the value "None".
@@ -249,6 +251,21 @@ MODEL_CREATOR = 'creator'
 # model 修改者字段, 若没有该字段可以为 None
 MODEL_MODIFIER = 'modifier'
 
+# When some models use delete flag, the http delete requests don't delete the items of models, but they set the
+# delete flag to "True" value. And we should set the delete flag name of the fields as the value of MODEL_DELETE_FLAG.
+# If we don't use the delete flag in every models, we just set the value of MODEL_DELETE_FLAG "None".
+# 是否使用删除标记位(delete请求不删除数据库表中数据, 而是修改标记位字段). 若使用, 则为删除标记位字段名;
+# 若不使用, 则为 None; 可以支持部分 model 使用删除标记位, 其余 model 不使用
+MODEL_DELETE_FLAG = 'del_flag'             # 'delete flag'
+
+# If MODEL_DELETE_FLAG is not None, we cannot use "unique=True" or "unique_together" in models. And we should list
+# these unique restrictions. The framework can maintain the unique restrictions.
+# 若 model 使用删除标记位, 无法使用唯一性约束, 需要定义唯一性约束的字段
+DICT_MODEL_UNIQUE = {
+    # # For example, model name, fields in tuples just as they defined in "unique_together":
+    # 'Company': (('company_name', ), ),
+}
+
 # If MODEL_DELETE_FLAG is not None, we cannot use many to many relation in model defination. We can define them
 # manually, and list their names in the tuple. The framework can maintain the relations when http get/post/put/delete.
 # 若 model 使用删除标记位, 多对多表不能由 django 本身维护, 该框架可以提供支持, 需要指定多对多表名
@@ -258,14 +275,6 @@ MANY_TO_MANY_RELATION_MODEL_NAMES = (
     # 'ProjectTeamToEmployee',
 )
 
-# If MODEL_DELETE_FLAG is not None, we cannot use "unique_together" in models. And we should list these unique
-# restrictions. The framework can maintain the unique restrictions.
-# 若 model 使用删除标记位, 无法使用唯一性约束, 需要定义唯一性约束的字段
-DICT_MODEL_UNIQUE_TOGETHER = {
-    # # For example, model name, fields in tuples just as they defined in "unique_together":
-    # 'Company': (('company_name', ), ),
-}
-
 # If we have some fields of the models store the json string, we can list in this tuple, these json can be resolved as
 # the correct format in http get response.
 # 若有 model 字段实际存储的是 json 串, 在此需要列出这些字段名, 以在 get 请求返回时候, 解析正确
@@ -273,6 +282,21 @@ MODEL_JSON_FIELD_NAMES = (
     # # For example:
     # 'employee_info',
 )
+
+# rename key names in request params
+RENAME_PARAMS = {}
+
+# rename key names in request uri params
+RENAME_URI_PARAMS = {}
+
+# rename key names in request data
+RENAME_DATA = {}
+
+# rename key names in response fields
+RENAME_FIELDS = {}
+
+# whether check params in http get request by serializer. The default value is False.
+HTTP_GET_CHECK_PARAMS = False
 
 # The configuration of whether omit un-editable fields from models in the http get response. The default value is False.
 OMIT_UN_EDITABLE_FIELDS = False
@@ -283,6 +307,18 @@ OMIT_UN_EDITABLE_FIELDS = False
 # Conversely, convert employee_name to employeeName before BenchmarkApiView return response.
 CONVERT_KEYS = False
 
+# When CONVERT_KEYS is True, the configuration of whether to omit continuous underlines as one underline in the process
+# for convert keys from python style to java style.
+OMIT_UNDERLINES = True
+
+# If DEBUG is True in settings.py, whether authentications for every APIs are needed.
+NEED_AUTHENTICATION_IN_DEBUG_MODE = True
+
+# keywords of http get request in benchmark_settings
+KEYWORDS = {SELECT_RELATED, VALUES, OFFSET, LIMIT, PAGE, COUNT, ORDER_BY, Q, Q_OR, Q_AND}
+
+# keywords of http get request in benchmark_settings which with value need to be converted
+KEYWORDS_WITH_VALUE_NEED_CONVERT = {SELECT_RELATED, VALUES, ORDER_BY}
 '''
 
 if __name__ == '__main__':

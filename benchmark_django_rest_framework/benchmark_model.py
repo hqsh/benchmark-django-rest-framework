@@ -67,8 +67,8 @@ class BenchmarkModel(object):
     @classmethod
     def get_unique_together(cls):
         model_name = cls.__name__
-        if model_name in SETTINGS.DICT_MODEL_UNIQUE_TOGETHER.keys():
-            return SETTINGS.DICT_MODEL_UNIQUE_TOGETHER[model_name]
+        if model_name in SETTINGS.DICT_MODEL_UNIQUE.keys():
+            return SETTINGS.DICT_MODEL_UNIQUE[model_name]
         return []
 
     @classmethod
@@ -88,9 +88,11 @@ class BenchmarkModel(object):
     @classmethod
     def get_first_or_last(cls, query_set, first=False, last=False):
         if first:
-            query_set = [query_set.first()]
+            query_set = query_set[:1]
         elif last:
-            query_set = [query_set.last()]
+            begin_index = query_set.count() - 1
+            if begin_index >= 0:
+                query_set = query_set[begin_index:]
         return query_set
 
     @classmethod
@@ -185,6 +187,17 @@ class BenchmarkModel(object):
         return data
 
     @classmethod
+    def model_to_dict_process_json(cls, instance, fields=None, exclude=None):
+        data = cls.model_to_dict(instance, fields, exclude)
+        for key, value in data.items():
+            if SETTINGS.MODEL_JSON_FIELD_NAMES is not None and key in SETTINGS.MODEL_JSON_FIELD_NAMES:
+                try:
+                    data[key] = json.loads(value)
+                except:
+                    pass
+        return data
+
+    @classmethod
     def model_to_dict_process_many_to_many_and_json(cls, instance, fields=None, exclude=None):
         data = cls.model_to_dict(instance, fields, exclude)
         for key, value in data.items():
@@ -211,7 +224,7 @@ class BenchmarkModel(object):
         for related_field in select_related_fields.keys():
             query_set = query_set.select_related(related_field)
         for i, m in enumerate(query_set):
-            dict_m = cls.model_to_dict(m)
+            dict_m = cls.model_to_dict_process_json(m)
             for relate_name, model in select_related_fields.items():
                 for relate_model_field in model._meta.get_fields():
                     name = relate_model_field.name
@@ -233,12 +246,14 @@ class BenchmarkModel(object):
                             related_field = getattr(related_field, _relate_name)
                     if related_field is not None and hasattr(related_field, name):
                         value = getattr(related_field, name)
+                        value = cls.get_json(name, value)
+                        if isinstance(value, datetime.datetime):
+                            value = str(value)
                         if name in dict_m.keys():
                             name = relate_name + '__' + name
                         while name in dict_m.keys():
                             name = name + '__'
                         dict_m[name] = value
-            cls.get_json_in_dict(dict_m)
             list_data.append(dict_m)
         return query_set
 
@@ -295,6 +310,8 @@ class BenchmarkModel(object):
         level_relates = []
         list_data = []
         query_set = cls.filter_model(params, query_set, Qs=Qs, using=using, first=first, last=last, order_by=order_by)
+        if isinstance(query_set, dict):
+            return query_set
         if SETTINGS.PAGE not in params.keys():
             try:
                 offset = int(params[SETTINGS.OFFSET])
@@ -434,8 +451,9 @@ class BenchmarkModel(object):
                         query_set = cls.get_select_related(query_set, select_related_fields, list_data)
                     else:
                         for item in query_set:
-                            dict_item = cls.model_to_dict(item)
-                            cls.get_json_in_dict(dict_item)
+                            if item is None:
+                                continue
+                            dict_item = cls.model_to_dict_process_json(item)
                             list_data.append(dict_item)
                 else:
                     for root in level_relate:
@@ -455,8 +473,7 @@ class BenchmarkModel(object):
                                 pre_root_dict[field_name] = []
                                 if len(root['level_nodes']) == 0:
                                     for item in pre_root_dict[field_name_objects]:
-                                        dict_item = cls.model_to_dict(item)
-                                        cls.get_json_in_dict(dict_item)
+                                        dict_item = cls.model_to_dict_process_json(item)
                                         pre_root_dict[field_name].append(dict_item)
                                 else:
                                     select_related_fields = OrderedDict()
@@ -471,8 +488,7 @@ class BenchmarkModel(object):
                                 root['list_dict_roots'].append(pre_root_dict[field_name])
         else:
             for item in query_set:
-                dict_item = cls.model_to_dict(item)
-                cls.get_json_in_dict(dict_item)
+                dict_item = cls.model_to_dict_process_json(item)
                 list_data.append(dict_item)
         cls.delete_query_set(list_data)
         list_data = cls.filter_fields(data=list_data, values=values, values_white_list=values_white_list)
@@ -792,7 +808,7 @@ class BenchmarkModel(object):
             if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
                 return res
         if SETTINGS.MODEL_DELETE_FLAG is not None:
-            if getattr(m, SETTINGS.MODEL_DELETE_FLAG):
+            if getattr(m, SETTINGS.MODEL_DELETE_FLAG, None):
                 return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET)
         for key, value in data.items():
             setattr(m, key, value)
