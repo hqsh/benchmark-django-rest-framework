@@ -711,7 +711,7 @@ class BenchmarkAPIView(PARENT_VIEW):
             res = self.serializer_check(data)
             if res is not None:
                 return res
-        if hasattr(self.params, SETTINGS.SELECT_RELATED):
+        if self.params.get(SETTINGS.SELECT_RELATED):
             select_related = self.params.pop(SETTINGS.SELECT_RELATED)
             if self.enable_select_related_in_params:
                 if isinstance(select_related, str):

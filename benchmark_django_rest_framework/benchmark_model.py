@@ -330,7 +330,7 @@ class BenchmarkModel(object):
                     query_set = query_set[offset - 1:]
             else:
                 query_set = query_set[offset - 1:offset - 1 + limit]
-        if select_related is not None:
+        if select_related is not None and len(select_related) > 0:
             # create data structures of model relations
             num_select_related = []
             for relate in select_related:
