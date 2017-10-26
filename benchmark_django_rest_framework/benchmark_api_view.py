@@ -14,6 +14,7 @@ import django
 import json
 import math
 import logging
+import redis
 import rest_framework
 import sys
 
@@ -68,6 +69,9 @@ class BenchmarkAPIView(PARENT_VIEW):
             ('http_get_check_params', False),   # whether check params in http get request by serializer
             ('serializer_use_benchmark_code', True),    # whether serializer use benchmark code and return the error response
             ('enable_select_related_in_params', False),
+            ('redis_ip', 'localhost'),
+            ('redis_port', 6379),
+            ('redis_db', 0),
         ):
             if not hasattr(cls, setting):
                 setattr(cls, setting, getattr(SETTINGS, setting.upper(), default_value))
@@ -96,6 +100,7 @@ class BenchmarkAPIView(PARENT_VIEW):
             ('check_data', {'get': (), 'post': (), 'put': (), 'delete': ()}),      # check data exist in request
             ('enabled_select_related_in_params', []),       # If enable_select_related_in_params is True, this variable
                                                             # defines which select_related strings can be accepted.
+            ('bool_params', []),           # bool params defined here will be translate to boolean type from string
         ):
             if not hasattr(cls, setting):
                 setattr(cls, setting, default_value)
@@ -116,6 +121,9 @@ class BenchmarkAPIView(PARENT_VIEW):
         for key, value in cls.rename_fields.items():
             cls.rename_fields_in_data['/' + SETTINGS.DATA + key] = value
             cls.rename_fields_in_data_results['/' + SETTINGS.DATA + '/' + SETTINGS.RESULT + key] = value
+        # initiate redis
+        if hasattr(cls, 'get_redis'):
+            cls.redis = redis.StrictRedis(host=cls.redis_ip, port=cls.redis_port, db=cls.redis_db)
         # other initial steps
         cls.logger = Logger()
         cls.init_serializer()
@@ -311,6 +319,48 @@ class BenchmarkAPIView(PARENT_VIEW):
             values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
         )
 
+    def get_redis_value(self, key, data_type='json', return_with_success_status=False):
+        '''
+        :param key: the key of redis data
+        :param data_type: the values' type of redis data, choices are 'json', 'str', 'int', 'float', 'bool' or 'bytes'
+        :param return_with_success_status: whether return the result of read redis success or not, True of False
+        :return: the variable of redis data or the benchmark error json. if return_with_success_status is True, the
+                 extra second returned variable show the whether the first returned variable is redis data.
+        '''
+        try:
+            value = self.redis.get(key)
+        except redis.exceptions.ConnectionError:
+            if return_with_success_status:
+                return self.get_response_by_code(28), False
+            return self.get_response_by_code(28)
+        if value is None:
+            if return_with_success_status:
+                return self.get_response_by_code(29), False
+            return self.get_response_by_code(29)
+        if data_type in ('json', 'str', 'int', 'float', 'bool'):
+            try:
+                value = bytes.decode(value)
+                if data_type == 'json':
+                    value = json.loads(value)
+                elif data_type == 'int':
+                    value = int(value)
+                elif data_type == 'float':
+                    value = float(value)
+                elif data_type == 'bool':
+                    if value.lower() == 'true':
+                        value = True
+                    elif value.lower() == 'false':
+                        value = False
+            except:
+                if return_with_success_status:
+                    return self.get_response_by_code(30), False
+                return self.get_response_by_code(30)
+        elif data_type != 'bytes':
+            raise ValueError('the value of "data_type" is unknown, choices are "json", "str", "int", "float", "bool"" or "bytes"')
+        if return_with_success_status:
+            return value, True
+        return value
+
     def serializer_check(self, data):
         if isinstance(data, dict):
             list_data = [data]
@@ -452,12 +502,26 @@ class BenchmarkAPIView(PARENT_VIEW):
             raise Exception('Unknown access type %s, choices are None, "all", "user", "staff", "superuser", "creator", '
                             'or the values of USER_RIGHT_AUTHENTICATE_FUNCTION_PATH, USER_RIGHT_AUTHENTICATE_FUNCTION '
                             'is wrong.' % role)
-        res = auth_func(self, role)
+        res = auth_func(self, roles)
         if res is True:
             return self.get_response_by_code()
         if res is False:
             return self.get_response_by_code(22)
         return res
+
+    @staticmethod
+    def string_to_bool(string):
+        try:
+            int_str = int(string)
+            if int_str == 0:
+                return False
+            return True
+        except:
+            if string.lower() == 'true':
+                return True
+            if string.lower() == 'false':
+                return False
+            return None
 
     @staticmethod
     def java_to_python(string):
@@ -649,6 +713,10 @@ class BenchmarkAPIView(PARENT_VIEW):
                         _several_q.append(_q)
                     self.Qs.append(_several_q)
             else:
+                if key in self.bool_params:
+                    value = self.string_to_bool(value)
+                    if value is None:
+                        return self.get_response_by_code(27 + SETTINGS.CODE_OFFSET)
                 self.params[key] = value
         self.uri_params = uri_params
         if self.method == 'get':
@@ -746,6 +814,12 @@ class BenchmarkAPIView(PARENT_VIEW):
                     has_result_field = None
                 self.process_keys(res, path, has_result_field)
 
+            # additional data
+            additional_data = getattr(self, 'additional_data', None)
+            if isinstance(additional_data, dict):
+                for key, value in additional_data.items():
+                    res[SETTINGS.DATA][self.python_to_java(key, self.omit_underlines)] = value
+
             # process json response class
             json_response_class = getattr(SETTINGS, 'JSON_RESPONSE_CLASS', None)
             if json_response_class == 'rest_framework.response.Response':
@@ -835,7 +909,12 @@ class BenchmarkAPIView(PARENT_VIEW):
     def get(self, request, **uri_params):
         res = self.begin(request, uri_params)
         if res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
-            res = self.get_model()
+            if hasattr(self, 'get_redis'):
+                res = self.get_redis()
+                if not isinstance(res, dict):
+                    res = self.get_response_by_code(31)
+            else:
+                res = self.get_model()
         if isinstance(res, dict) and SETTINGS.CODE in res.keys() and res[SETTINGS.CODE] == SETTINGS.SUCCESS_CODE:
             self.paginate(res)
         return self.process_response(res)

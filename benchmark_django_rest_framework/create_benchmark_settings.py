@@ -5,6 +5,7 @@ init_data = '''\
 # -*- coding:utf-8 -*-
 from django.http import JsonResponse
 from rest_framework.response import Response
+from rest_framework import status
 import copy
 
 
@@ -77,12 +78,19 @@ DICT_RESPONSE_BY_CODE = {
     '24': {MSG: 'the name of request parameter is not correct: '},
     '25': {MSG: 'request data in http body should be dict, if http method is post, dicts in list is also applied'},
     '26': {MSG: 'batch delete failed, the reasons are: '},
+    '27': {MSG: 'bool type params in url should be "true" or "false", "1" or "0"'},
+    '28': {MSG: 'the connection to redis is down'},
+    '29': {MSG: 'redis has no data'},
+    '30': {MSG: 'redis data is not correct'},
+    '31': {MSG: 'redis data is not correct after processed, should be dict'},
     '100': {MSG: 'login failed'},
 }
 
 # The custom http response json
 DICT_CUSTOM_RESPONSE_BY_CODE = {
     '400': {MSG: 'Bad Request'},
+    '401': {MSG: 'Authentication credentials were not provided.'},
+    '403': {MSG: 'You do not have permission to perform this action.'},
     '404': {MSG: 'Not Found'},
     '500': {MSG: 'Internal Server Error'},
 }
@@ -216,9 +224,9 @@ FILE = 'file'
 # ACCESS = 'access'
 
 # Custom function for user right authentication.
-# The function should be static method, class method of a class in the file, or just a function not in any class.
-# The inputs of the function are user and role. And the outputs of it are True, False or the return value from
-# get_response_by_code function in BenchmarkApiView.
+# The function should be static method, class method in a class, or just a function not in any class.
+# The inputs of the function are the instance of BenchmarkApiView and role(str or a list of str).
+# And the outputs of it are True, False or the return value from get_response_by_code function in BenchmarkApiView.
 USER_RIGHT_AUTHENTICATE_FUNCTION = None
 
 # The keyword of django model primary key.
@@ -313,6 +321,11 @@ OMIT_UNDERLINES = True
 
 # If DEBUG is True in settings.py, whether authentications for every APIs are needed.
 NEED_AUTHENTICATION_IN_DEBUG_MODE = True
+
+# redis configurations
+REDIS_IP = 'localhost'
+REDIS_PORT = 6379
+REDIS_DB = 1
 
 # keywords of http get request in benchmark_settings
 KEYWORDS = {SELECT_RELATED, VALUES, OFFSET, LIMIT, PAGE, COUNT, ORDER_BY, Q, Q_OR, Q_AND}

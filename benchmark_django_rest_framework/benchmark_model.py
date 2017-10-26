@@ -873,6 +873,12 @@ class BenchmarkModel(object):
 
     @classmethod
     def delete_model(cls, data, user=None, using='default'):
+        primary_key_name = cls._meta.pk.attname
+        if primary_key_name in data.keys():
+            if SETTINGS.MODEL_PRIMARY_KEY in data.keys():
+                data.pop(primary_key_name)
+            else:
+                data[SETTINGS.MODEL_PRIMARY_KEY] = data.pop(primary_key_name)
         if 'pk' in data.keys():
             if 'delete_flag' in data.keys():
                 delete_flag = data['delete_flag']
