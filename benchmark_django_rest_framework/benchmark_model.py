@@ -148,13 +148,14 @@ class BenchmarkModel(object):
     @classmethod
     def delete_query_set(cls, list_data):
         for data in list_data:
-            keys = tuple(data.keys())
-            for key in keys:
-                if isinstance(data[key], django.db.models.query.QuerySet) or \
-                        isinstance(type(data[key]), django.db.models.base.ModelBase):
-                    del data[key]
-                elif isinstance(data[key], list):
-                    cls.delete_query_set(data[key])
+            if isinstance(data, dict):
+                keys = tuple(data.keys())
+                for key in keys:
+                    if isinstance(data[key], django.db.models.query.QuerySet) or \
+                            isinstance(type(data[key]), django.db.models.base.ModelBase):
+                        del data[key]
+                    elif isinstance(data[key], list):
+                        cls.delete_query_set(data[key])
 
     @staticmethod
     def get_location(pre_location_relate):
@@ -301,9 +302,12 @@ class BenchmarkModel(object):
 
     @classmethod
     def get_model(cls, params=None, query_set=None, select_related=None, values=None, values_white_list=True, Qs=None,
-                  using='default', first=False, last=False, order_by=None):
+                  using='default', first=False, last=False, order_by=None, limit=0, page=0, offset=0,
+                  return_with_count=False):
         res = cls.check_params(params)
         if res is not None:
+            if return_with_count:
+                return res, None
             return res
         relates = {}
         relates_keys = []    # relates, 为避免重复的统计进去
@@ -311,25 +315,18 @@ class BenchmarkModel(object):
         list_data = []
         query_set = cls.filter_model(params, query_set, Qs=Qs, using=using, first=first, last=last, order_by=order_by)
         if isinstance(query_set, dict):
+            if return_with_count:
+                return query_set, None
             return query_set
+        query_set_for_count = query_set
         if SETTINGS.PAGE not in params.keys():
-            try:
-                offset = int(params[SETTINGS.OFFSET])
-            except:
-                offset = 1
-            if offset < 1:
-                offset = 1
-            try:
-                limit = int(params[SETTINGS.LIMIT])
-            except:
-                limit = 0
-            if limit < 0:
-                limit = 0
             if limit == 0:
-                if offset > 1:
-                    query_set = query_set[offset - 1:]
-            else:
-                query_set = query_set[offset - 1:offset - 1 + limit]
+                query_set = query_set[offset:]
+            elif limit > 0:
+                if page > 0:
+                    query_set = query_set[(page - 1) * limit: page * limit]
+                else:
+                    query_set = query_set[offset:offset + limit]
         if select_related is not None and len(select_related) > 0:
             # create data structures of model relations
             num_select_related = []
@@ -385,7 +382,10 @@ class BenchmarkModel(object):
                             relate_type = 'to_many'    # reverse many to one
                             related_model = field.rel.related_model
                     else:
-                        return cls.get_response_by_code(14 + SETTINGS.CODE_OFFSET, msg_append=relate)
+                        res = cls.get_response_by_code(14 + SETTINGS.CODE_OFFSET, msg_append=relate)
+                        if return_with_count:
+                            return res, None
+                        return res
                     if pre_relate is None:
                         level = 0
                         level_root = None
@@ -415,7 +415,7 @@ class BenchmarkModel(object):
                             location = cls.get_location(level_root)
                     else:
                         location = None
-                    if pre_root is None:
+                    if pre_root is None or pre_root['level'] == 0:
                         field_name_from_pre_root = relate
                     else:
                         field_name_from_pre_root = relate[len(pre_root['field_name']) + 2:]
@@ -457,8 +457,12 @@ class BenchmarkModel(object):
                             list_data.append(dict_item)
                 else:
                     for root in level_relate:
-                        list_pre_root_objects, list_pre_root_dicts = ([query_set], [list_data]) if root['pre_root'] is \
-                            None else (root['pre_root']['list_object_roots'], root['pre_root']['list_dict_roots'])
+                        if root['pre_root'] is None or 'list_object_roots' not in root['pre_root']:
+                            list_pre_root_objects = [query_set]
+                            list_pre_root_dicts = [list_data]
+                        else:
+                            list_pre_root_objects = root['pre_root']['list_object_roots']
+                            list_pre_root_dicts = root['pre_root']['list_dict_roots']
                         root['list_object_roots'] = []
                         root['list_dict_roots'] = []
                         for pre_root_objects, pre_root_dicts in zip(list_pre_root_objects, list_pre_root_dicts):
@@ -492,7 +496,10 @@ class BenchmarkModel(object):
                 list_data.append(dict_item)
         cls.delete_query_set(list_data)
         list_data = cls.filter_fields(data=list_data, values=values, values_white_list=values_white_list)
-        return cls.get_response_by_code(data=list_data)
+        res = cls.get_response_by_code(data=list_data)
+        if return_with_count:
+            return res, query_set_for_count.count()
+        return res
 
     @classmethod
     def filter_fields(cls, data, values, values_white_list=True):
@@ -554,7 +561,7 @@ class BenchmarkModel(object):
         return cls.get_response_by_code()
 
     @classmethod
-    def post_model(cls, data, user=None, using='default', serializer_is_custom=True):
+    def post_model(cls, data, user=None, using='default', serializer_is_custom=True, return_with_inserted_data=False):
         if isinstance(data, dict):
             post_data = [data]
             insert_multiple_data = False
@@ -588,14 +595,20 @@ class BenchmarkModel(object):
                                 if field_name == cls._meta.pk.attname:
                                     exist_item = cls.objects.using(using).filter(pk=value).first()
                                     if exist_item is not None:
-                                        return cls.get_response_by_code(4 + SETTINGS.CODE_OFFSET)
+                                        res = cls.get_response_by_code(4 + SETTINGS.CODE_OFFSET)
+                                        if return_with_inserted_data:
+                                            return res, None
+                                        return res
                         else:
                             exist_item = cls.objects.using(using).filter(pk=value).first()
                             if exist_item is not None:
                                 if getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):
                                     setattr(exist_item, SETTINGS.MODEL_DELETE_FLAG, 0)
                                 else:
-                                    return cls.get_response_by_code(4 + SETTINGS.CODE_OFFSET)
+                                    res = cls.get_response_by_code(4 + SETTINGS.CODE_OFFSET)
+                                    if return_with_inserted_data:
+                                        return res, None
+                                    return res
                     if is_relationship_field:
                         if field.many_to_one or field.one_to_one:
                             if SETTINGS.MODEL_DELETE_FLAG:
@@ -608,9 +621,15 @@ class BenchmarkModel(object):
                                         related_item = field.related_model.objects.using(using).get(**{field.target_field.name: _value})
                                         if hasattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
                                             if getattr(related_item, SETTINGS.MODEL_DELETE_FLAG):
-                                                return cls.get_response_by_code(8 + SETTINGS.CODE_OFFSET, msg=(key, _value))
+                                                res = cls.get_response_by_code(8 + SETTINGS.CODE_OFFSET, msg=(key, _value))
+                                                if return_with_inserted_data:
+                                                    return res, None
+                                                return res
                                     else:
-                                        return cls.get_response_by_code(9 + SETTINGS.CODE_OFFSET, msg=(key, _value))
+                                        res = cls.get_response_by_code(9 + SETTINGS.CODE_OFFSET, msg=(key, _value))
+                                        if return_with_inserted_data:
+                                            return res, None
+                                        return res
                             foreign_key = field.attname
                             foreign_key_add[foreign_key] = data[key]
                             foreign_key_del.append(key)
@@ -629,6 +648,8 @@ class BenchmarkModel(object):
             if SETTINGS.MODEL_DELETE_FLAG is not None and exist_item is None:
                 res = cls.check_unique_together(data_before_foreign_key_process, using=using)
                 if res[SETTINGS.CODE] != SETTINGS.SUCCESS_CODE:
+                    if return_with_inserted_data:
+                        return res, None
                     return res
             list_many_to_many_relations.append(many_to_many_relations)
         # insert data to database
@@ -638,6 +659,7 @@ class BenchmarkModel(object):
         failed_items = []
         msgs = []
         foreign_key_does_not_exist_msg = ''
+        inserted_data = []
         for data, many_to_many_relations, exist_item in zip(post_data, list_many_to_many_relations, exist_items):
             if exist_item is None:
                 list_data = []    # to support batch insert by values of fields in request data in list
@@ -665,13 +687,17 @@ class BenchmarkModel(object):
                 if len(list_data) == 0:
                     res = cls.get_response_by_code(13 + SETTINGS.CODE_OFFSET)
                     if not insert_multiple_data:
+                        if return_with_inserted_data:
+                            if not insert_multiple_data:
+                                inserted_data = inserted_data[0] if len(inserted_data) == 1 else None
+                            return res, inserted_data
                         return res
                     failed_items.append(data)
                     if res[SETTINGS.MSG] not in msgs:
                         msgs.append(res[SETTINGS.MSG])
                 creator = None
                 modifier = None
-                if user is not None:
+                if user is not None and user != '':
                     if SETTINGS.MODEL_CREATOR is not None and hasattr(cls, SETTINGS.MODEL_CREATOR):
                         if isinstance(getattr(cls, SETTINGS.MODEL_CREATOR),
                                       django.db.models.fields.related_descriptors.ForwardManyToOneDescriptor):
@@ -692,6 +718,8 @@ class BenchmarkModel(object):
                         if modifier is not None:
                             setattr(exist_item, SETTINGS.MODEL_MODIFIER, modifier)
                         exist_item.save(using=using)
+                        if return_with_inserted_data:
+                            inserted_data.append(exist_item)
                         created_count += 1
                         created_items.append(cls.model_to_dict_process_many_to_many_and_json(exist_item))
                 except django.db.utils.IntegrityError as e:
@@ -699,6 +727,10 @@ class BenchmarkModel(object):
                         if e.args[0] == 1048 or e.args[0].startswith('NOT NULL constraint failed: '):    # field cannot be None (很可能还有其他类型的错误, 待增加)
                             res = cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                             if not insert_multiple_data:
+                                if return_with_inserted_data:
+                                    if not insert_multiple_data:
+                                        inserted_data = inserted_data[0] if len(inserted_data) == 1 else None
+                                    return res, inserted_data
                                 return res
                             failed_items.append(data)
                             if res[SETTINGS.MSG] not in msgs:
@@ -713,6 +745,10 @@ class BenchmarkModel(object):
                     if SETTINGS.MODEL_DELETE_FLAG is not None and not getattr(exist_item, SETTINGS.MODEL_DELETE_FLAG):    # duplicate entry for unique
                         res = cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                         if not insert_multiple_data:
+                            if return_with_inserted_data:
+                                if not insert_multiple_data:
+                                    inserted_data = inserted_data[0] if len(inserted_data) == 1 else None
+                                return res, inserted_data
                             return res
                         failed_items.append(data)
                         if res[SETTINGS.MSG] not in msgs:
@@ -722,6 +758,8 @@ class BenchmarkModel(object):
                     if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                         setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
                     exist_item.save(using=using)
+                    if return_with_inserted_data:
+                        inserted_data.append(exist_item)
                     created_count += 1
                     created_items.append(cls.model_to_dict_process_many_to_many_and_json(exist_item))
                 for key, value in many_to_many_relations.items():
@@ -733,7 +771,7 @@ class BenchmarkModel(object):
                         try:
                             getattr(exist_item, key).add(v)
                         except django.db.utils.IntegrityError:
-                            foreign_key_does_not_exist_msg += '    ' + key + '=' + v + ' does not exist'
+                            foreign_key_does_not_exist_msg += '    ' + key + '=' + str(v) + ' does not exist'
             else:
                 try:
                     for key, value in data.items():
@@ -741,12 +779,18 @@ class BenchmarkModel(object):
                     if user is not None and SETTINGS.MODEL_MODIFIER is not None and hasattr(exist_item, SETTINGS.MODEL_MODIFIER):
                         setattr(exist_item, SETTINGS.MODEL_MODIFIER, user)
                     exist_item.save(using=using)
+                    if return_with_inserted_data:
+                        inserted_data.append(exist_item)
                     created_count += 1
                     created_items.append(cls.model_to_dict_process_many_to_many_and_json(exist_item))
                 except Exception as e:
                     print(traceback.format_exc())
                     res = cls.get_response_by_code(1 + SETTINGS.CODE_OFFSET, str(e))
                     if not insert_multiple_data:
+                        if return_with_inserted_data:
+                            if not insert_multiple_data:
+                                inserted_data = inserted_data[0] if len(inserted_data) == 1 else None
+                            return res, inserted_data
                         return res
                     failed_items.append(data)
                     if res[SETTINGS.MSG] not in msgs:
@@ -754,9 +798,17 @@ class BenchmarkModel(object):
             if not insert_multiple_data:
                 res = cls.get_response_by_code(SETTINGS.SUCCESS_CODE, msg_append=foreign_key_does_not_exist_msg,
                                                data=cls.model_to_dict_process_many_to_many_and_json(exist_item))
+                if return_with_inserted_data:
+                    if not insert_multiple_data:
+                        inserted_data = inserted_data[0] if len(inserted_data) == 1 else None
+                    return res, inserted_data
                 return res
         data = {SETTINGS.TOTAL_COUNT: total_count, SETTINGS.CREATED_COUNT: created_count,
                 SETTINGS.FAILED_ITEMS: failed_items, SETTINGS.CREATED_ITEMS: created_items}
+        if return_with_inserted_data:
+            if not insert_multiple_data:
+                inserted_data = inserted_data[0] if len(inserted_data) == 1 else None
+            return cls.get_response_by_code(data=data), inserted_data
         return cls.get_response_by_code(data=data)
 
     @classmethod
@@ -830,7 +882,7 @@ class BenchmarkModel(object):
                 m = cls.objects.using(using).get(pk=pk)
             except:
                 return cls.get_response_by_code(6 + SETTINGS.CODE_OFFSET, data={'model': cls.__name__, 'pk': pk})
-            if SETTINGS.MODEL_DELETE_FLAG:
+            if SETTINGS.MODEL_DELETE_FLAG and hasattr(m, SETTINGS.MODEL_DELETE_FLAG):
                 now_delete_flag = True if getattr(m, SETTINGS.MODEL_DELETE_FLAG) != 0 else False
                 if now_delete_flag == delete_flag:
                     return cls.get_response_by_code(7 + SETTINGS.CODE_OFFSET, data={'model': cls.__name__, 'pk': pk})

@@ -1,9 +1,10 @@
 # -*- coding:utf-8 -*-
 
+from collections import OrderedDict
+from django.db.models import Model
 from django.http import JsonResponse, StreamingHttpResponse
 from django.utils.decorators import classonlymethod
 from django_filters import rest_framework as filters
-from rest_framework import status
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.serializers import ModelSerializer, Serializer
@@ -17,6 +18,7 @@ import logging
 import redis
 import rest_framework
 import sys
+import time
 
 
 SETTINGS = getattr(django.conf.settings, 'BENCHMARK_SETTINGS', None)
@@ -69,6 +71,7 @@ class BenchmarkAPIView(PARENT_VIEW):
             ('http_get_check_params', False),   # whether check params in http get request by serializer
             ('serializer_use_benchmark_code', True),    # whether serializer use benchmark code and return the error response
             ('enable_select_related_in_params', False),
+            ('only_enable_select_related_for_get_one', False),
             ('redis_ip', 'localhost'),
             ('redis_port', 6379),
             ('redis_db', 0),
@@ -314,10 +317,16 @@ class BenchmarkAPIView(PARENT_VIEW):
         self.check_primary_model('get_model')
         params = self.params
         params.update(self.uri_params)
-        return self.primary_model.get_model(
-            params=params, select_related=self.select_related, values=self.values,
-            values_white_list=self.values_white_list, Qs=self.Qs, using=self.using
+        if self.only_enable_select_related_for_get_one and len(self.uri_params) == 0:
+            select_related = None
+        else:
+            select_related = self.select_related
+        res, self.count = self.primary_model.get_model(
+            params=params, select_related=select_related, values=self.values,
+            values_white_list=self.values_white_list, Qs=self.Qs, using=self.using,
+            limit=self.limit, page=self.page, offset=self.offset, return_with_count=True
         )
+        return res
 
     def get_redis_value(self, key, data_type='json', return_with_success_status=False):
         '''
@@ -361,6 +370,23 @@ class BenchmarkAPIView(PARENT_VIEW):
             return value, True
         return value
 
+    def set_redis_value(self, key, value, data_type='json', need_retry=False):
+        '''
+        :param key: the key of redis data
+        :param key: the value of redis data
+        :param data_type: the values' type of redis data, choices are 'json', 'str', 'int', 'float', 'bool' or 'bytes'
+        :return: success or not.
+        '''
+        while True:
+            try:
+                self.redis.set(key, value)
+            except Exception as e:
+                if not need_retry:
+                    return self.get_response_by_code(32, msg_append=str(e))
+                print('set redis value failed, retrying...')
+                time.sleep(5)
+        return self.get_response_by_code()
+
     def serializer_check(self, data):
         if isinstance(data, dict):
             list_data = [data]
@@ -368,6 +394,7 @@ class BenchmarkAPIView(PARENT_VIEW):
             list_data = data
         else:
             raise Exception('data should be dict, list or tuple')
+        self.data = []
         for data in list_data:
             if self.method in ('get', 'put'):
                 partial = True
@@ -380,6 +407,13 @@ class BenchmarkAPIView(PARENT_VIEW):
                 serializer = self.get_serializer(data=data, partial=partial)
             try:
                 serializer.is_valid(raise_exception=True)
+                self_data = OrderedDict()
+                for key, value in serializer.validated_data.items():
+                    if isinstance(value, Model):
+                        self_data[key] = value.pk
+                    else:
+                        self_data[key] = value
+                self.data.append(self_data)
             except rest_framework.exceptions.ValidationError as e:
                 if self.serializer_use_benchmark_code:
                     dict_codes = e.get_codes()
@@ -405,10 +439,12 @@ class BenchmarkAPIView(PARENT_VIEW):
                     return self.get_response_by_code(20 + SETTINGS.CODE_OFFSET, data=exception_detail)
             except Exception as e:
                 return self.get_response_by_code(1 + SETTINGS.CODE_OFFSET, msg=str(e))
+        if len(self.data) == 1:
+            self.data = self.data[0]
         return None
 
     # post 请求对应的 model 操作
-    def post_model(self, data=None):
+    def post_model(self, data=None, return_with_inserted_data=False):
         self.check_primary_model('post_model')
         post_data = copy.deepcopy(self.data)
         if data:
@@ -421,15 +457,20 @@ class BenchmarkAPIView(PARENT_VIEW):
                 raise Exception('data should be dict, list or tuple')
         if isinstance(post_data, dict):
             if SETTINGS.MODEL_PRIMARY_KEY in post_data.keys():
+                if return_with_inserted_data:
+                    return self.get_response_by_code(12 + SETTINGS.CODE_OFFSET), None
                 return self.get_response_by_code(12 + SETTINGS.CODE_OFFSET)
         elif isinstance(post_data, (list, tuple)):
             for pd in post_data:
                 if SETTINGS.MODEL_PRIMARY_KEY in pd.keys():
+                    if return_with_inserted_data:
+                        return self.get_response_by_code(12 + SETTINGS.CODE_OFFSET), None
                     return self.get_response_by_code(12 + SETTINGS.CODE_OFFSET)
         else:
             raise Exception('data should be dict, list or tuple')
         return self.primary_model.post_model(post_data, user=self.user.get_username(), using=self.using,
-                                             serializer_is_custom=self.serializer_is_custom)
+                                             serializer_is_custom=self.serializer_is_custom,
+                                             return_with_inserted_data=return_with_inserted_data)
 
     def get_uri_params_data(self, data=None):
         post_data = copy.deepcopy(self.data)
@@ -497,6 +538,8 @@ class BenchmarkAPIView(PARENT_VIEW):
                     not_creator_pks.append(item.pk)
             if len(not_creator_pks) > 0:
                 return self.get_response_by_code(23 + SETTINGS.CODE_OFFSET, msg_append=', '.join(not_creator_pks))
+        if 'right_authenticate' in roles:
+            return self.get_response_by_code() if self.right_authenticate() else self.get_response_by_code(22 + SETTINGS.CODE_OFFSET)
         auth_func = getattr(SETTINGS, 'USER_RIGHT_AUTHENTICATE_FUNCTION', None)
         if not hasattr(auth_func, '__call__'):
             raise Exception('Unknown access type %s, choices are None, "all", "user", "staff", "superuser", "creator", '
@@ -561,9 +604,14 @@ class BenchmarkAPIView(PARENT_VIEW):
     def rename_input_keys(self):
         for str_input in ('uri_params', 'params', 'data'):
             input = getattr(self, str_input)
-            rename_dict = getattr(self, 'rename_' + str_input)
-            for key, new_key in rename_dict.items():
-                input[new_key] = input.pop(key)
+            if isinstance(input, dict):
+                list_input = [input]
+            else:
+                list_input = input
+            for _input in list_input:
+                rename_dict = getattr(self, 'rename_' + str_input)
+                for key, new_key in rename_dict.items():
+                    _input[new_key] = _input.pop(key)
 
     # If the view define the filed names of request or response need not convert between styles of java and python by
     # the class variables that methods_not_need_convert_keys_for_request or methods_not_need_convert_keys_for_response,
@@ -613,19 +661,22 @@ class BenchmarkAPIView(PARENT_VIEW):
                 new_string = new_string + alphabet
         return new_string
 
-    def python_to_java_keys(self, res):
-        if SETTINGS.CONVERT_KEYS and self.need_convert('response', self.method):
-            if isinstance(res, dict):
-                keys = list(res.keys())
+    @staticmethod
+    def python_to_java_keys(res, omit_underlines):
+        stack = [res]
+        while len(stack) > 0:
+            data = stack.pop()
+            if isinstance(data, dict):
+                keys = list(data.keys())
                 for key in keys:
-                    if isinstance(res[key], (dict, list)):
-                        self.python_to_java_keys(res[key])
-                    new_key = self.python_to_java(key, self.omit_underlines)
+                    if isinstance(data[key], (dict, list)):
+                        stack.append(data[key])
+                    new_key = BenchmarkAPIView.python_to_java(key, omit_underlines)
                     if key != new_key:
-                        res[new_key] = res.pop(key)
-            elif isinstance(res, list):
-                for item in res:
-                    self.python_to_java_keys(item)
+                        data[new_key] = data.pop(key)
+            elif isinstance(data, list):
+                for item in data:
+                    stack.append(item)
 
     def json_to_string_keys(self):
         if isinstance(self.data, dict):
@@ -641,38 +692,44 @@ class BenchmarkAPIView(PARENT_VIEW):
                     data[key] = json.dumps(data[key])
 
     def process_keys(self, res, path=None, has_result_field=False):
+        if has_result_field:
+            values_fields = self.values_fields_in_data_results
+            rename_fields = self.rename_fields_in_data_results
+        else:
+            values_fields = self.values_fields_in_data
+            rename_fields = self.rename_fields_in_data
         if SETTINGS.CONVERT_KEYS and self.need_convert('response', self.method):
             need_python_to_java = True
         else:
             need_python_to_java = False
-        if isinstance(res, dict):
-            keys = list(res.keys())
-            for key in keys:
-                if isinstance(res[key], (dict, list)):
-                    if path is None:
-                        self.process_keys(res[key])
+        stack = [(res, path)]
+        while len(stack) > 0:
+            node, node_path = stack.pop()
+            if isinstance(node, list):
+                for item in node:
+                    stack.append((item, node_path))
+            elif isinstance(node, dict):
+                keys = list(node.keys())
+                for key in keys:
+                    if isinstance(node[key], (dict, list)):
+                        if node_path is None:
+                            stack.append((node[key], None))
+                        else:
+                            stack.append((node[key], node_path + key + '/'))
+                    if node_path in values_fields and (
+                            (self.values_white_list and key not in values_fields[node_path]) or
+                            (not self.values_white_list and key in values_fields[node_path])
+                    ):
+                        del node[key]
                     else:
-                        self.process_keys(res[key], path + key + '/', has_result_field)
-                if has_result_field:
-                    values_fields = self.values_fields_in_data_results
-                    rename_fields = self.rename_fields_in_data_results
-                else:
-                    values_fields = self.values_fields_in_data
-                    rename_fields = self.rename_fields_in_data
-                if path in values_fields and (
-                        (self.values_white_list and key not in values_fields[path]) or
-                        (not self.values_white_list and key in values_fields[path])
-                ):
-                    del res[key]
-                    continue
-                if path in rename_fields and key in rename_fields[path]:
-                    new_key = rename_fields[path][key]
-                    res[new_key] = res.pop(key)
-        elif isinstance(res, list):
-            for item in res:
-                self.process_keys(item, path, has_result_field)
-        if need_python_to_java:
-            self.python_to_java_keys(res)
+                        if node_path in rename_fields and key in rename_fields[node_path]:
+                            new_key = rename_fields[node_path][key]
+                            node[new_key] = node.pop(key)
+                            key = new_key
+                        if need_python_to_java:
+                            new_key = self.python_to_java(key, self.omit_underlines)
+                            if key != new_key:
+                                node[new_key] = node.pop(key)
 
     # 处理各种请求的入口，解析各字段并进行处理
     def begin(self, request, uri_params={}):
@@ -720,9 +777,27 @@ class BenchmarkAPIView(PARENT_VIEW):
                 self.params[key] = value
         self.uri_params = uri_params
         if self.method == 'get':
-            self.offset = self.params.pop(SETTINGS.OFFSET, None)
             self.limit = self.params.pop(SETTINGS.LIMIT, None)
             self.page = self.params.pop(SETTINGS.PAGE, None)
+            self.offset = self.params.pop(SETTINGS.OFFSET, None)
+            try:
+                self.limit = int(self.limit)
+            except:
+                self.limit = 0
+            if self.limit < 0:
+                self.limit = 0
+            try:
+                self.page = int(self.page)
+            except:
+                self.page = 1
+            if self.page < 1:
+                self.page = 1
+            try:
+                self.offset = int(self.offset)
+            except:
+                self.offset = 0
+            if self.offset < 0:
+                self.offset = 0
         elif self.method in ('post', 'put', 'delete'):
             request_data = copy.deepcopy(request.data)
             if isinstance(request_data, dict):
@@ -800,6 +875,11 @@ class BenchmarkAPIView(PARENT_VIEW):
                 if data is not None:
                     if isinstance(res[SETTINGS.DATA], (list, dict)) and len(res[SETTINGS.DATA]) == 0:
                         res[SETTINGS.DATA] = None
+                    elif isinstance(res[SETTINGS.DATA], list):
+                        res[SETTINGS.DATA] = {
+                            SETTINGS.RESULT: res[SETTINGS.DATA],
+                            SETTINGS.COUNT: len(res[SETTINGS.DATA])
+                        }
                     elif isinstance(res[SETTINGS.DATA].get(SETTINGS.RESULT, None), (list, dict)) and len(res[SETTINGS.DATA][SETTINGS.RESULT]) == 0:
                         res[SETTINGS.DATA][SETTINGS.RESULT] = None
             if data is not None and len(data) > 0:
@@ -845,61 +925,47 @@ class BenchmarkAPIView(PARENT_VIEW):
                     res[SETTINGS.DATA] = res[SETTINGS.DATA][0]
             # get many in pages
             elif self.page is not None:
-                try:
-                    page = int(self.page)
-                except:
-                    page = 1
-                count = len(res[SETTINGS.DATA])
-                try:
-                    limit = int(self.limit)
-                except:
-                    limit = 0
-                if limit < 0:
-                    limit = 0
-                if limit == 0:
-                    page_count = 0 if count == 0 else 1
+                if self.limit == 0:
+                    page_count = 0 if self.count == 0 else 1
                 else:
-                    page_count = math.ceil(count / limit)
-                if 1 <= page <= page_count:
-                    if limit == 0:
-                        result = res[SETTINGS.DATA]
-                    else:
-                        result = res[SETTINGS.DATA][(page - 1) * limit: page * limit]
+                    page_count = math.ceil(self.count / self.limit)
+                if 1 <= self.page <= page_count:
+                    result = res[SETTINGS.DATA]
                 else:
                     result = None
-                if page < 1:
-                    page = 0
-                elif page > page_count:
-                    page = page_count + 1
+                if self.page < 1:
+                    self.page = 0
+                elif self.page > page_count:
+                    self.page = page_count + 1
                 basic_url = 'http://' + self.host + self.path
                 previous_param_url = None
                 next_param_url = None
                 params = copy.deepcopy(self.params)
-                params[SETTINGS.LIMIT] = limit
-                params[SETTINGS.PAGE] = page
-                if page <= 1:
+                params[SETTINGS.LIMIT] = self.limit
+                params[SETTINGS.PAGE] = self.page
+                if self.page <= 1:
                     previous_url = None
                 else:
                     for key, value in params.items():
                         if key == 'page':
-                            value = str(page - 1)
+                            value = str(self.page - 1)
                         if previous_param_url is None:
                             previous_param_url = '?' + key + '=' + str(value)
                         else:
                             previous_param_url += '&' + key + '=' + str(value)
                     previous_url = basic_url + previous_param_url
-                if page >= page_count:
+                if self.page >= page_count:
                     next_url = None
                 else:
                     for key, value in params.items():
                         if key == 'page':
-                            value = str(page + 1)
+                            value = str(self.page + 1)
                         if next_param_url is None:
                             next_param_url = '?' + key + '=' + str(value)
                         else:
                             next_param_url += '&' + key + '=' + str(value)
                     next_url = basic_url + next_param_url
-                res[SETTINGS.DATA] = {SETTINGS.RESULT: result, SETTINGS.COUNT: count,
+                res[SETTINGS.DATA] = {SETTINGS.RESULT: result, SETTINGS.COUNT: self.count,
                                       SETTINGS.NEXT: next_url, SETTINGS.PREVIOUS: previous_url}
             # get many not in pages
             else:
